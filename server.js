@@ -31,7 +31,9 @@ ICPs: pedidos acima de R$30k (consultivo, método Ginger)
 Clientes ABM: potencial acima de R$200k (parceria estratégica profunda)
 
 SEGMENTOS ATENDIDOS
-Cosméticos, Higiene Pessoal (HPPC), Saneantes, Home Care, Pet Care.
+Cosméticos, Higiene Pessoal (HPPC), Saneantes, Home Care, Pet Care, Perfumaria Fina e Aromatização de Ambiente.
+
+As fragrâncias da Ginger se aplicam a qualquer produto que carregue fragrância, incluindo velas, difusores, aromatizadores, sprays de ambiente, produtos de limpeza, cosméticos, perfumes, produtos pet e qualquer outro segmento onde fragrância seja um atributo do produto. Nunca dizer que algo "não é nossa expertise" — se o produto carrega fragrância, a Ginger pode desenvolver.
 
 AS QUATRO PERSONAS E SEUS ARGUMENTOS
 1. CEO/Dono empresa grande: portfólio olfativo como ativo estratégico, credencial Sinter (R$1 bi em 5 anos, cerca de 5% market share sabonetes)

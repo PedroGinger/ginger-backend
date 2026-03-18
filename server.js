@@ -1,8 +1,6 @@
-
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
-const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(express.json());
@@ -134,14 +132,9 @@ Sempre que tiver coletado pelo menos nome, empresa e uma dor ou projeto identifi
 
 Atualize esse bloco a cada resposta com os dados mais recentes. Deixe em branco os que ainda não foram informados. Sempre preencha classificacao e motivo_classificacao assim que tiver informação suficiente.`;
 
-// ── TRANSPORTADOR DE EMAIL — Gmail
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
+// ── TRANSPORTADOR DE EMAIL — removido, usando Resend via API
+
+
 
 // ── HISTÓRICO DE CONVERSAS (WhatsApp)
 const conversas = {};
@@ -267,7 +260,7 @@ app.post('/lead', async (req, res) => {
   }
 });
 
-// ── FUNÇÃO: ENVIAR EMAIL DE LEAD
+// ── FUNÇÃO: ENVIAR EMAIL DE LEAD via Resend
 async function enviarEmailLead(lead, numero = null) {
   const html = `
     <h2 style="color:#47166B">Novo Lead Qualificado — Ginger Agente</h2>
@@ -291,15 +284,28 @@ async function enviarEmailLead(lead, numero = null) {
   `;
 
   try {
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: process.env.EMAIL_COMERCIAL,
-      subject: `Novo Lead BOM: ${lead.empresa || 'Sem empresa'} — Agente Ginger`,
-      html
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: 'Ginger Agente <onboarding@resend.dev>',
+        to: process.env.EMAIL_COMERCIAL.split(','),
+        subject: `Novo Lead BOM: ${lead.empresa || 'Sem empresa'} — Agente Ginger`,
+        html
+      })
     });
-    console.log('Email enviado com sucesso para:', process.env.EMAIL_COMERCIAL);
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.error('Erro Resend:', data);
+      throw new Error(data.message || 'Erro ao enviar');
+    }
+    console.log('Email enviado com sucesso via Resend:', data.id);
   } catch(error) {
-    console.error('Erro detalhado ao enviar email:', error.message, error.code, error.response);
+    console.error('Erro detalhado ao enviar email:', error.message);
     throw error;
   }
 }

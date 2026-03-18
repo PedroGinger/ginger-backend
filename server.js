@@ -1,3 +1,4 @@
+
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
@@ -289,12 +290,18 @@ async function enviarEmailLead(lead, numero = null) {
     <p style="color:#888;font-size:12px">Gerado automaticamente pelo Agente Ginger</p>
   `;
 
-  await transporter.sendMail({
-    from: process.env.EMAIL_USER,
-    to: process.env.EMAIL_COMERCIAL,
-    subject: `Novo Lead BOM: ${lead.empresa || 'Sem empresa'} — Agente Ginger`,
-    html
-  });
+  try {
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: process.env.EMAIL_COMERCIAL,
+      subject: `Novo Lead BOM: ${lead.empresa || 'Sem empresa'} — Agente Ginger`,
+      html
+    });
+    console.log('Email enviado com sucesso para:', process.env.EMAIL_COMERCIAL);
+  } catch(error) {
+    console.error('Erro detalhado ao enviar email:', error.message, error.code, error.response);
+    throw error;
+  }
 }
 
 // ── LIMPEZA DE HISTÓRICO INATIVO (a cada 2h)

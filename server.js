@@ -133,17 +133,13 @@ Sempre que tiver coletado pelo menos nome, empresa e uma dor ou projeto identifi
 
 Atualize esse bloco a cada resposta com os dados mais recentes. Deixe em branco os que ainda não foram informados. Sempre preencha classificacao e motivo_classificacao assim que tiver informação suficiente.`;
 
-// ── TRANSPORTADOR DE EMAIL — Office 365
+// ── TRANSPORTADOR DE EMAIL — Gmail
 const transporter = nodemailer.createTransport({
-  host: 'smtp.office365.com',
-  port: 587,
-  secure: false,
-  requireTLS: true,
+  service: 'gmail',
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS
-  },
-  tls: { ciphers: 'SSLv3' }
+  }
 });
 
 // ── HISTÓRICO DE CONVERSAS (WhatsApp)

@@ -291,7 +291,7 @@ async function enviarEmailLead(lead, numero = null) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        from: 'Ginger Agente <onboarding@resend.dev>',
+        from: 'Ginger Agente <pedro.bolanho@ginger.ind.br>',
         to: process.env.EMAIL_COMERCIAL.split(','),
         subject: `Novo Lead BOM: ${lead.empresa || 'Sem empresa'} — Agente Ginger`,
         html

@@ -78,12 +78,12 @@ Ao longo da conversa, avalie o lead continuamente e classifique com base nesses 
 LEAD BOM — classifique como "BOM" quando:
 - Tem CNPJ (é empresa formal)
 - Demonstrou interesse real em abrir um projeto
-- Tem potencial de pedido acima do mínimo (acima de R$5k/mês)
+- Tem potencial de pedido acima do mínimo: R$5k/mês OU 3kg por fragrância por pedido
 - Segmento dentro do ICP (cosméticos, HPPC, saneantes, home care, pet care)
 
 LEAD POTENCIAL FUTURO — classifique como "POTENCIAL_FUTURO" quando:
 - Não tem CNPJ mas tem interesse real, ou
-- Tem CNPJ mas volume abaixo do mínimo para compra direta, ou
+- Tem CNPJ mas volume abaixo de R$5k/mês E abaixo de 3kg por fragrância, ou
 - Tem projeto real mas ainda não está pronto para compra direta
 Nesses casos, direcionar educadamente para as revendas parceiras da Ginger.
 

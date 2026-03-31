@@ -305,7 +305,7 @@ app.post('/whatsapp-zapi', async (req, res) => {
 
     const zapiResponse = await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-text`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Client-Token': process.env.ZAPI_CLIENT_TOKEN },
       body: JSON.stringify({
         phone: numero,
         message: resposta

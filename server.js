@@ -171,7 +171,7 @@ Somente classifique como RUIM após confirmar que não há interesse real, empre
 DADOS INTERNOS — NÃO COMPARTILHAR COM O LEAD
 Especialistas comerciais: Juliana Cardoso (juliana.cardoso@ginger.ind.br) e Jennifer Santos (jennifer.santos@ginger.ind.br)
 Email remetente do sistema: lead@ginger.ind.br
-WhatsApp do agente: +55 19 98450-1235
+WhatsApp do agente: +55 19 98354-0110
 
 FORMATO ESPECIAL DE RESPOSTA PARA EXTRAÇÃO DE DADOS
 Sempre que tiver coletado pelo menos nome, empresa e uma dor ou projeto identificado, inclua ao final da sua resposta um bloco JSON com os dados coletados, nesse formato exato:
@@ -231,7 +231,99 @@ app.post('/chat', async (req, res) => {
   }
 });
 
-// ── ROTA: WHATSAPP (recebe mensagem e responde)
+// ── ROTA: WHATSAPP Z-API (recebe mensagem e responde)
+app.post('/whatsapp-zapi', async (req, res) => {
+  console.log('WEBHOOK RECEBIDO:', JSON.stringify(req.body).substring(0, 500));
+  res.status(200).json({ ok: true });
+
+  try {
+    const body = req.body;
+    if (body.fromMe) return;
+
+    const numero = body.phone;
+    const mensagem = body.text?.message || body.text;
+
+    if (!numero || !mensagem || typeof mensagem !== 'string' || !mensagem.trim()) {
+      console.log('Mensagem ignorada: sem numero ou texto valido');
+      return;
+    }
+
+    console.log('Processando mensagem de:', numero, 'Texto:', mensagem.substring(0, 100));
+
+    if (!conversas[numero]) {
+      conversas[numero] = [];
+      conversas[numero].lastActivity = Date.now();
+    }
+
+    conversas[numero].push({ role: 'user', content: mensagem });
+    conversas[numero].lastActivity = Date.now();
+    if (conversas[numero].length > 20) {
+      conversas[numero] = conversas[numero].slice(-20);
+      conversas[numero].lastActivity = Date.now();
+    }
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: SYSTEM_PROMPT,
+        messages: conversas[numero].filter(m => m.role && m.content)
+      })
+    });
+
+    const data = await response.json();
+    const raw = data.content?.[0]?.text || 'Não consegui processar. Pode repetir?';
+
+    console.log('Resposta gerada para:', numero);
+
+    const regex = /%%%LEAD_DATA%%%([\s\S]*?)%%%END_LEAD_DATA%%%/;
+    const match = raw.match(regex);
+    let leadDetectado = null;
+
+    if (match) {
+      try {
+        const parsed = JSON.parse(match[1].trim());
+        if (parsed.nome && parsed.empresa && (parsed.email || parsed.telefone) && parsed.classificacao === 'BOM') {
+          leadDetectado = parsed;
+        }
+      } catch(e) {}
+    }
+
+    const resposta = raw.replace(regex, '').trim();
+    conversas[numero].push({ role: 'assistant', content: raw });
+
+    const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
+    const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
+
+    console.log('Enviando resposta via Z-API para:', numero);
+
+    const zapiResponse = await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-text`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phone: numero,
+        message: resposta
+      })
+    });
+
+    const zapiResult = await zapiResponse.json();
+    console.log('Z-API resposta:', JSON.stringify(zapiResult));
+
+    if (leadDetectado) {
+      await enviarEmailLead(leadDetectado, numero);
+    }
+  } catch(error) {
+    console.error('Erro WhatsApp Z-API:', error.message);
+  }
+});
+
+// ── ROTA: WHATSAPP LEGADO (manter compatibilidade)
 app.post('/whatsapp', async (req, res) => {
   const { numero, mensagem } = req.body;
 
@@ -371,86 +463,6 @@ async function enviarEmailLead(lead, numero = null) {
     throw error;
   }
 }
-
-// ── ROTA: WHATSAPP Z-API (recebe mensagem e responde)
-app.post('/whatsapp-zapi', async (req, res) => {
-  res.status(200).json({ ok: true });
-
-  try {
-    const body = req.body;
-    if (!body.text || !body.phone) return;
-    if (body.fromMe) return;
-
-    const numero = body.phone;
-    const mensagem = body.text.message || body.text;
-
-    if (typeof mensagem !== 'string' || !mensagem.trim()) return;
-
-    if (!conversas[numero]) {
-      conversas[numero] = [];
-      conversas[numero].lastActivity = Date.now();
-    }
-
-    conversas[numero].push({ role: 'user', content: mensagem });
-    conversas[numero].lastActivity = Date.now();
-    if (conversas[numero].length > 20) {
-      conversas[numero] = conversas[numero].slice(-20);
-      conversas[numero].lastActivity = Date.now();
-    }
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        system: SYSTEM_PROMPT,
-        messages: conversas[numero].filter(m => m.role && m.content)
-      })
-    });
-
-    const data = await response.json();
-    const raw = data.content?.[0]?.text || 'Não consegui processar. Pode repetir?';
-
-    const regex = /%%%LEAD_DATA%%%([\s\S]*?)%%%END_LEAD_DATA%%%/;
-    const match = raw.match(regex);
-    let leadDetectado = null;
-
-    if (match) {
-      try {
-        const parsed = JSON.parse(match[1].trim());
-        if (parsed.nome && parsed.empresa && (parsed.email || parsed.telefone) && parsed.classificacao === 'BOM') {
-          leadDetectado = parsed;
-        }
-      } catch(e) {}
-    }
-
-    const resposta = raw.replace(regex, '').trim();
-    conversas[numero].push({ role: 'assistant', content: raw });
-
-    const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
-    const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
-
-    await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-text`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        phone: numero,
-        message: resposta
-      })
-    });
-
-    if (leadDetectado) {
-      await enviarEmailLead(leadDetectado, numero);
-    }
-  } catch(error) {
-    console.error('Erro WhatsApp Z-API:', error.message);
-  }
-});
 
 // ── LIMPEZA DE HISTÓRICO INATIVO (a cada 2h)
 setInterval(() => {

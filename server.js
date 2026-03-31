@@ -372,6 +372,86 @@ async function enviarEmailLead(lead, numero = null) {
   }
 }
 
+// ── ROTA: WHATSAPP Z-API (recebe mensagem e responde)
+app.post('/whatsapp-zapi', async (req, res) => {
+  res.status(200).json({ ok: true });
+
+  try {
+    const body = req.body;
+    if (!body.text || !body.phone) return;
+    if (body.fromMe) return;
+
+    const numero = body.phone;
+    const mensagem = body.text.message || body.text;
+
+    if (typeof mensagem !== 'string' || !mensagem.trim()) return;
+
+    if (!conversas[numero]) {
+      conversas[numero] = [];
+      conversas[numero].lastActivity = Date.now();
+    }
+
+    conversas[numero].push({ role: 'user', content: mensagem });
+    conversas[numero].lastActivity = Date.now();
+    if (conversas[numero].length > 20) {
+      conversas[numero] = conversas[numero].slice(-20);
+      conversas[numero].lastActivity = Date.now();
+    }
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: SYSTEM_PROMPT,
+        messages: conversas[numero].filter(m => m.role && m.content)
+      })
+    });
+
+    const data = await response.json();
+    const raw = data.content?.[0]?.text || 'Não consegui processar. Pode repetir?';
+
+    const regex = /%%%LEAD_DATA%%%([\s\S]*?)%%%END_LEAD_DATA%%%/;
+    const match = raw.match(regex);
+    let leadDetectado = null;
+
+    if (match) {
+      try {
+        const parsed = JSON.parse(match[1].trim());
+        if (parsed.nome && parsed.empresa && (parsed.email || parsed.telefone) && parsed.classificacao === 'BOM') {
+          leadDetectado = parsed;
+        }
+      } catch(e) {}
+    }
+
+    const resposta = raw.replace(regex, '').trim();
+    conversas[numero].push({ role: 'assistant', content: raw });
+
+    const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
+    const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
+
+    await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-text`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phone: numero,
+        message: resposta
+      })
+    });
+
+    if (leadDetectado) {
+      await enviarEmailLead(leadDetectado, numero);
+    }
+  } catch(error) {
+    console.error('Erro WhatsApp Z-API:', error.message);
+  }
+});
+
 // ── LIMPEZA DE HISTÓRICO INATIVO (a cada 2h)
 setInterval(() => {
   const limite = Date.now() - (2 * 60 * 60 * 1000);

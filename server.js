@@ -74,18 +74,27 @@ Nome completo, Cargo, Empresa, CNPJ, Email, Telefone, Número aproximado de func
 
 Colete essas informações aos poucos, conforme a conversa avança. Nunca pergunte tudo de uma vez. Priorize entender a dor antes de pedir dados cadastrais. Peça nome e empresa cedo, mas deixe CNPJ, email e telefone para quando o interesse estiver claro.
 
-REGRA CRÍTICA DE CONTATO — OBRIGATÓRIA
-NUNCA classifique um lead como "BOM" e NUNCA inclua o bloco %%%LEAD_DATA%%% com classificacao "BOM" sem ter coletado NO MÍNIMO:
+⚠️ REGRA CRÍTICA DE CONTATO — INEGOCIÁVEL ⚠️
+Esta é a regra mais importante de todo o sistema. Sem exceção.
+
+NUNCA inclua o bloco %%%LEAD_DATA%%% com classificacao "BOM" sem ter coletado TODOS os três itens abaixo:
 1. Nome
 2. Empresa
-3. Pelo menos um canal de contato: email OU telefone/WhatsApp
+3. Pelo menos um canal de contato direto: email OU telefone/WhatsApp
 
-Se o lead demonstrou interesse real, tem potencial e segmento adequado, mas ainda não informou nenhum canal de contato, o agente DEVE pedir antes de encerrar. Sem contato, o comercial não consegue dar continuidade ao atendimento. Essa regra é inegociável.
+NUNCA inclua o bloco %%%LEAD_DATA%%% com QUALQUER classificacao (BOM, POTENCIAL_FUTURO ou RUIM) se os campos "email" E "telefone" estiverem ambos vazios. O comercial precisa de pelo menos um canal para dar continuidade. Sem contato = sem envio do bloco.
 
-Exemplo de como pedir naturalmente:
+Se o lead demonstrou interesse mas ainda não informou contato, PARE TUDO e peça o contato antes de gerar o bloco. Não importa se a conversa está acabando, não importa se o lead parece apressado. Sem contato, o bloco não pode ser gerado.
+
+Como pedir naturalmente:
 "Perfeito, [Nome]. Para eu acionar nossa especialista e ela dar continuidade com você, me passa seu email ou WhatsApp de preferência?"
+"Antes de encaminhar, qual o melhor canal para nossa equipe te contatar? Email ou WhatsApp?"
 
-Só após ter nome, empresa e contato é que o agente pode classificar como BOM e gerar o bloco de dados.
+CHECKLIST ANTES DE GERAR O BLOCO (faça mentalmente toda vez):
+✅ Tem nome? Se não, pergunte.
+✅ Tem empresa? Se não, pergunte.
+✅ Tem email OU telefone? Se não, PERGUNTE ANTES DE QUALQUER COISA.
+✅ Só depois de confirmar os 3, gere o bloco.
 
 CLASSIFICAÇÃO DO LEAD — OBRIGATÓRIO
 Ao longo da conversa, avalie o lead continuamente e classifique com base nesses critérios:
@@ -101,12 +110,14 @@ LEAD POTENCIAL FUTURO — classifique como "POTENCIAL_FUTURO" quando:
 - Tem CNPJ mas volume abaixo de R$5k/mês E abaixo de 3kg por fragrância, ou
 - Tem projeto real mas ainda não está pronto para compra direta
 Nesses casos, direcionar educadamente para as revendas parceiras da Ginger.
+IMPORTANTE: mesmo para POTENCIAL_FUTURO, só gere o bloco se tiver pelo menos um contato (email ou telefone).
 
 LEAD RUIM — classifique como "RUIM" apenas quando:
 - Não tem empresa, não tem projeto, não tem interesse real
 - É apenas curioso, estudante, ou testando o chat
 - Parou de responder sem demonstrar interesse
 - Não tem nenhum potencial de negócio
+Para RUIM, o bloco é opcional. Se não tiver contato, não gere o bloco.
 
 MOTIVOS PADRÃO:
 BOM: "Projeto concreto identificado", "Volume adequado e segmento ICP", "Interesse real e CNPJ confirmado"
@@ -174,7 +185,7 @@ Email remetente do sistema: lead@ginger.ind.br
 WhatsApp do agente: +55 19 98354-0110
 
 FORMATO ESPECIAL DE RESPOSTA PARA EXTRAÇÃO DE DADOS
-Sempre que tiver coletado pelo menos nome, empresa e uma dor ou projeto identificado, inclua ao final da sua resposta um bloco JSON com os dados coletados, nesse formato exato:
+Sempre que tiver coletado pelo menos nome, empresa, CONTATO (email ou telefone) e uma dor ou projeto identificado, inclua ao final da sua resposta um bloco JSON com os dados coletados, nesse formato exato:
 
 %%%LEAD_DATA%%%
 {
@@ -196,10 +207,25 @@ Sempre que tiver coletado pelo menos nome, empresa e uma dor ou projeto identifi
 
 Atualize esse bloco a cada resposta com os dados mais recentes. Deixe em branco os que ainda não foram informados. Sempre preencha classificacao e motivo_classificacao assim que tiver informação suficiente.
 
-REGRA FINAL DE VALIDAÇÃO: Antes de preencher classificacao como "BOM", verifique se os campos "email" ou "telefone" estão preenchidos. Se ambos estiverem vazios, NÃO classifique como BOM. Continue a conversa e peça o contato.`;
+⚠️ VALIDAÇÃO FINAL ANTES DE GERAR O BLOCO (obrigatório toda vez):
+Antes de escrever %%%LEAD_DATA%%%, verifique:
+1. O campo "email" OU "telefone" está preenchido? Se AMBOS estão vazios, NÃO gere o bloco. Peça o contato primeiro.
+2. O campo "nome" está preenchido? Se não, NÃO gere o bloco.
+3. O campo "empresa" está preenchido? Se não, NÃO gere o bloco.
+Se qualquer uma dessas validações falhar, continue a conversa e colete a informação faltante. NUNCA gere o bloco incompleto.`;
 
 // ── HISTÓRICO DE CONVERSAS (WhatsApp)
 const conversas = {};
+
+// ── FUNÇÃO: VALIDAR LEAD ANTES DE ENVIAR EMAIL
+function validarLead(parsed) {
+  if (!parsed.nome || !parsed.nome.trim()) return false;
+  if (!parsed.empresa || !parsed.empresa.trim()) return false;
+  const temEmail = parsed.email && parsed.email.trim() && parsed.email.trim() !== '-';
+  const temTelefone = parsed.telefone && parsed.telefone.trim() && parsed.telefone.trim() !== '-';
+  if (!temEmail && !temTelefone) return false;
+  return true;
+}
 
 // ── ROTA: HEALTH CHECK
 app.get('/', (req, res) => {
@@ -289,10 +315,23 @@ app.post('/whatsapp-zapi', async (req, res) => {
     if (match) {
       try {
         const parsed = JSON.parse(match[1].trim());
-        if (parsed.nome && parsed.empresa && (parsed.email || parsed.telefone) && parsed.classificacao === 'BOM') {
-          leadDetectado = parsed;
+
+        // AUTO-FILL: se veio pelo WhatsApp e não tem telefone, preenche com o número
+        if (!parsed.telefone || !parsed.telefone.trim() || parsed.telefone.trim() === '-') {
+          parsed.telefone = numero;
+          console.log('Telefone auto-preenchido com número WhatsApp:', numero);
         }
-      } catch(e) {}
+
+        // VALIDAÇÃO: só envia email se tiver nome + empresa + contato
+        if (validarLead(parsed)) {
+          leadDetectado = parsed;
+          console.log('Lead VALIDADO:', parsed.nome, parsed.empresa, 'Classificação:', parsed.classificacao);
+        } else {
+          console.log('Lead BLOQUEADO (dados incompletos):', JSON.stringify(parsed));
+        }
+      } catch(e) {
+        console.log('Erro ao parsear lead:', e.message);
+      }
     }
 
     const resposta = raw.replace(regex, '').trim();
@@ -366,8 +405,12 @@ app.post('/whatsapp', async (req, res) => {
     if (match) {
       try {
         const parsed = JSON.parse(match[1].trim());
-        if (parsed.nome && parsed.empresa && (parsed.email || parsed.telefone) && parsed.classificacao === 'BOM') {
+
+        // VALIDAÇÃO: só envia email se tiver nome + empresa + contato
+        if (validarLead(parsed)) {
           leadDetectado = parsed;
+        } else {
+          console.log('Lead BLOQUEADO no chat (dados incompletos):', JSON.stringify(parsed));
         }
       } catch(e) {}
     }
@@ -406,6 +449,12 @@ app.post('/abordar', async (req, res) => {
 // ── ROTA: ENVIO MANUAL DE LEAD (site)
 app.post('/lead', async (req, res) => {
   const lead = req.body;
+
+  // VALIDAÇÃO: mesmo para envio manual, exigir contato
+  if (!validarLead(lead)) {
+    return res.status(400).json({ error: 'Lead sem dados de contato suficientes' });
+  }
+
   try {
     await enviarEmailLead(lead);
     res.json({ success: true });
@@ -416,6 +465,12 @@ app.post('/lead', async (req, res) => {
 
 // ── FUNÇÃO: ENVIAR EMAIL DE LEAD via Resend
 async function enviarEmailLead(lead, numero = null) {
+  // TRAVA FINAL: nunca enviar email sem contato
+  if (!validarLead(lead)) {
+    console.log('EMAIL BLOQUEADO: lead sem contato suficiente:', lead.nome, lead.empresa);
+    return;
+  }
+
   const html = `
     <h2 style="color:#47166B">Novo Lead Qualificado — Ginger Agente</h2>
     ${numero ? `<p><b>Número WhatsApp:</b> ${numero}</p>` : ''}

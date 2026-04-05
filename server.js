@@ -31,8 +31,10 @@ async function getSheetsClient() {
   }
 }
 
-// ── MAPEAMENTO: número WhatsApp -> linha da planilha (para atualizar TRATATIVA)
-const leadsPlanilha = {};
+// ── TRAVAS DE SEGURANÇA
+const numerosJaAbordados = new Set();   // nunca manda duas vezes para o mesmo número
+let verificacaoRodando = false;          // impede execução simultânea
+const leadsPlanilha = {};                // número -> linha da planilha
 
 const SYSTEM_PROMPT = `Você é o agente de atendimento da Ginger Fragrance Design, uma casa de fragrâncias estratégica brasileira, B2B, focada em transformar fragrância em ativo de negócio para indústrias de HPPC, Saneantes, Home Care e Pet Care.
 
@@ -253,7 +255,7 @@ function validarLead(parsed) {
   return true;
 }
 
-// ── FUNÇÃO: LIMPAR NÚMERO DE TELEFONE (só dígitos, formato Brasil)
+// ── FUNÇÃO: LIMPAR NÚMERO DE TELEFONE
 function limparTelefone(tel) {
   if (!tel) return null;
   let limpo = tel.replace(/\D/g, '');
@@ -261,6 +263,47 @@ function limparTelefone(tel) {
   if (!limpo.startsWith('55')) limpo = '55' + limpo;
   if (limpo.length < 12 || limpo.length > 13) return null;
   return limpo;
+}
+
+// ── FUNÇÃO: VERIFICAR SE É HORÁRIO COMERCIAL (8h-18h, seg-sex, horário de Brasília)
+function isHorarioComercial() {
+  const agora = new Date();
+  const brasilOffset = -3;
+  const utc = agora.getTime() + (agora.getTimezoneOffset() * 60000);
+  const brasil = new Date(utc + (brasilOffset * 3600000));
+  const hora = brasil.getHours();
+  const dia = brasil.getDay(); // 0=dom, 6=sab
+  if (dia === 0 || dia === 6) return false;
+  if (hora < 8 || hora >= 18) return false;
+  return true;
+}
+
+// ── FUNÇÃO: VERIFICAR SE DATA É RECENTE (últimas 2 horas)
+function isLeadRecente(dataStr) {
+  try {
+    // Formato da planilha: "DD/MM/YYYY HH:MM:SS"
+    const partes = dataStr.split(' ');
+    if (partes.length < 2) return false;
+    const dataParts = partes[0].split('/');
+    const horaParts = partes[1].split(':');
+    if (dataParts.length < 3) return false;
+    const dataLead = new Date(
+      parseInt(dataParts[2]), parseInt(dataParts[1]) - 1, parseInt(dataParts[0]),
+      parseInt(horaParts[0] || 0), parseInt(horaParts[1] || 0), parseInt(horaParts[2] || 0)
+    );
+    const agora = new Date();
+    const diffMs = agora.getTime() - dataLead.getTime();
+    const diffHoras = diffMs / (1000 * 60 * 60);
+    return diffHoras <= 2;
+  } catch(e) {
+    console.log('Erro ao parsear data:', dataStr, e.message);
+    return false;
+  }
+}
+
+// ── FUNÇÃO: DELAY REAL ENTRE MENSAGENS
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // ── FUNÇÃO: ATUALIZAR COLUNA TRATATIVA NA PLANILHA
@@ -281,13 +324,28 @@ async function atualizarTratativa(rowIndex, valor) {
 }
 
 // ── FUNÇÃO: VERIFICAR NOVOS LEADS NA PLANILHA E ABORDAR
-async function verificarNovosLeads() {
+async function verificarNovosLeads(manual = false) {
+  // TRAVA 1: impedir execução simultânea
+  if (verificacaoRodando) {
+    console.log('Verificação já em andamento, pulando');
+    return { status: 'já em andamento' };
+  }
+
+  // TRAVA 2: só funciona em horário comercial (exceto quando disparado manualmente)
+  if (!manual && !isHorarioComercial()) {
+    console.log('Fora do horário comercial, pulando verificação automática');
+    return { status: 'fora do horário comercial (automático)' };
+  }
+
+  verificacaoRodando = true;
   console.log('Verificando novos leads na planilha...');
+
   try {
     const sheets = await getSheetsClient();
     if (!sheets) {
-      console.log('Google Sheets não disponível, pulando verificação');
-      return;
+      console.log('Google Sheets não disponível');
+      verificacaoRodando = false;
+      return { status: 'sheets indisponível' };
     }
 
     const res = await sheets.spreadsheets.values.get({
@@ -298,12 +356,21 @@ async function verificarNovosLeads() {
     const rows = res.data.values;
     if (!rows || rows.length <= 1) {
       console.log('Planilha vazia ou só cabeçalho');
-      return;
+      verificacaoRodando = false;
+      return { status: 'planilha vazia' };
     }
 
     // Colunas: A=DATA, B=NOME, C=EMAIL, D=TELEFONE, E=EMPRESA, F=CIDADE, G=FATURAMENTO, H=CNPJ, I=TRATATIVA
     let abordados = 0;
+    const MAX_POR_RODADA = 5;
+
     for (let i = 1; i < rows.length; i++) {
+      // TRAVA 3: máximo 5 leads por rodada
+      if (abordados >= MAX_POR_RODADA) {
+        console.log(`Limite de ${MAX_POR_RODADA} leads por rodada atingido`);
+        break;
+      }
+
       const row = rows[i];
       const data = row[0] || '';
       const nome = row[1] || '';
@@ -315,29 +382,49 @@ async function verificarNovosLeads() {
       const cnpj = row[7] || '';
       const tratativa = row[8] || '';
 
-      // Pula se já tem tratativa (Juliana já chamou ou agente já abordou)
+      // TRAVA 4: pula se já tem tratativa
       if (tratativa.trim()) continue;
 
-      // Pula se não tem telefone (não tem como abordar por WhatsApp)
+      // TRAVA 5: só leads das últimas 2 horas
+      if (!isLeadRecente(data)) {
+        continue;
+      }
+
+      // TRAVA 6: pula se não tem telefone válido
       const numeroLimpo = limparTelefone(telefone);
       if (!numeroLimpo) {
-        console.log(`Linha ${i + 1}: ${nome} sem telefone válido, pulando`);
+        console.log(`Linha ${i + 1}: ${nome} sem telefone válido, marcando na planilha`);
         await atualizarTratativa(i + 1, 'sem telefone válido');
         continue;
       }
 
-      // Pula se não tem nome
+      // TRAVA 7: pula se não tem nome
       if (!nome.trim()) continue;
 
-      console.log(`Abordando lead da planilha: ${nome} (${empresa}) - ${numeroLimpo}`);
+      // TRAVA 8: nunca mandar para o mesmo número duas vezes
+      if (numerosJaAbordados.has(numeroLimpo)) {
+        console.log(`Linha ${i + 1}: ${nome} (${numeroLimpo}) já foi abordado antes, pulando`);
+        await atualizarTratativa(i + 1, 'duplicado, já abordado');
+        continue;
+      }
+
+      console.log(`Abordando lead: ${nome} (${empresa}) - ${numeroLimpo}`);
+
+      // TRAVA 9: marca na planilha ANTES de enviar (previne duplicata)
+      await atualizarTratativa(i + 1, 'abordado pelo agente');
+
+      // TRAVA 10: registra o número na memória
+      numerosJaAbordados.add(numeroLimpo);
 
       // Monta mensagem proativa personalizada
       const primeiroNome = nome.split(' ')[0];
-      const mensagemInicial = empresa.trim()
+      const nomeEmpresa = empresa.trim() && empresa.trim().toLowerCase() !== 'não tenho' && empresa.trim().toLowerCase() !== 'nao tenho';
+
+      const mensagemInicial = nomeEmpresa
         ? `Olá, ${primeiroNome}! Tudo bem?\n\nVi que você demonstrou interesse em conhecer a Ginger Fragrance Design. Fico feliz!\n\nA gente desenvolve fragrâncias estratégicas para indústrias como a ${empresa}, ajudando marcas a se diferenciarem com identidade olfativa própria.\n\nPosso entender melhor o que vocês estão buscando?`
         : `Olá, ${primeiroNome}! Tudo bem?\n\nVi que você demonstrou interesse em conhecer a Ginger Fragrance Design. Fico feliz!\n\nA gente desenvolve fragrâncias estratégicas para indústrias, ajudando marcas a se diferenciarem com identidade olfativa própria.\n\nMe conta um pouco sobre o seu projeto?`;
 
-      // Salva contexto da conversa com dados da planilha
+      // Salva contexto da conversa
       conversas[numeroLimpo] = [
         {
           role: 'user',
@@ -346,8 +433,6 @@ async function verificarNovosLeads() {
         { role: 'assistant', content: mensagemInicial }
       ];
       conversas[numeroLimpo].lastActivity = Date.now();
-
-      // Mapeia o número para a linha da planilha (para atualizar depois)
       leadsPlanilha[numeroLimpo] = i + 1;
 
       // Envia mensagem via Z-API
@@ -365,21 +450,25 @@ async function verificarNovosLeads() {
         });
         const zapiResult = await zapiResponse.json();
         console.log(`Mensagem enviada para ${primeiroNome}:`, JSON.stringify(zapiResult));
-
-        // Marca na planilha como abordado
-        await atualizarTratativa(i + 1, 'abordado pelo agente');
         abordados++;
-
-        // Espera 30 segundos entre cada abordagem (evitar spam)
-        await new Promise(resolve => setTimeout(resolve, 30000));
       } catch(e) {
         console.error(`Erro ao enviar para ${nome}:`, e.message);
+      }
+
+      // TRAVA 11: delay real de 60 segundos entre cada mensagem
+      if (abordados < MAX_POR_RODADA) {
+        console.log('Aguardando 60 segundos antes do próximo envio...');
+        await delay(60000);
       }
     }
 
     console.log(`Verificação concluída: ${abordados} novos leads abordados`);
+    verificacaoRodando = false;
+    return { status: 'concluído', abordados };
   } catch(e) {
     console.error('Erro ao verificar planilha:', e.message);
+    verificacaoRodando = false;
+    return { status: 'erro', mensagem: e.message };
   }
 }
 
@@ -472,21 +561,17 @@ app.post('/whatsapp-zapi', async (req, res) => {
       try {
         const parsed = JSON.parse(match[1].trim());
 
-        // AUTO-FILL: se veio pelo WhatsApp e não tem telefone, preenche com o número
         if (!parsed.telefone || !parsed.telefone.trim() || parsed.telefone.trim() === '-') {
           parsed.telefone = numero;
-          console.log('Telefone auto-preenchido com número WhatsApp:', numero);
         }
 
-        // VALIDAÇÃO: só envia email se tiver nome + empresa + contato
         if (validarLead(parsed)) {
           leadDetectado = parsed;
           console.log('Lead VALIDADO:', parsed.nome, parsed.empresa, 'Classificação:', parsed.classificacao);
 
-          // ATUALIZAR PLANILHA: se esse número veio da planilha, atualiza a coluna TRATATIVA
+          // Atualiza planilha com classificação se veio da planilha
           if (leadsPlanilha[numero] && parsed.classificacao) {
             await atualizarTratativa(leadsPlanilha[numero], parsed.classificacao);
-            console.log(`Planilha atualizada com classificação: ${parsed.classificacao}`);
           }
         } else {
           console.log('Lead BLOQUEADO (dados incompletos):', JSON.stringify(parsed));
@@ -501,8 +586,6 @@ app.post('/whatsapp-zapi', async (req, res) => {
 
     const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
     const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
-
-    console.log('Enviando resposta via Z-API para:', numero);
 
     const zapiResponse = await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-text`, {
       method: 'POST',
@@ -524,7 +607,7 @@ app.post('/whatsapp-zapi', async (req, res) => {
   }
 });
 
-// ── ROTA: WHATSAPP LEGADO (manter compatibilidade)
+// ── ROTA: WHATSAPP LEGADO
 app.post('/whatsapp', async (req, res) => {
   const { numero, mensagem } = req.body;
 
@@ -569,8 +652,6 @@ app.post('/whatsapp', async (req, res) => {
         const parsed = JSON.parse(match[1].trim());
         if (validarLead(parsed)) {
           leadDetectado = parsed;
-        } else {
-          console.log('Lead BLOQUEADO no chat (dados incompletos):', JSON.stringify(parsed));
         }
       } catch(e) {}
     }
@@ -588,7 +669,7 @@ app.post('/whatsapp', async (req, res) => {
   }
 });
 
-// ── ROTA: ABORDAGEM PROATIVA MANUAL (landing page)
+// ── ROTA: ABORDAGEM PROATIVA MANUAL
 app.post('/abordar', async (req, res) => {
   const { numero, nome, empresa, cidade, faturamento } = req.body;
   const primeiroNome = nome.split(' ')[0];
@@ -606,13 +687,13 @@ app.post('/abordar', async (req, res) => {
   res.json({ numero, mensagem: mensagemInicial });
 });
 
-// ── ROTA: VERIFICAÇÃO MANUAL DA PLANILHA (para testar)
+// ── ROTA: VERIFICAÇÃO MANUAL DA PLANILHA (funciona qualquer horário)
 app.get('/verificar-leads', async (req, res) => {
-  await verificarNovosLeads();
-  res.json({ status: 'Verificação executada' });
+  const resultado = await verificarNovosLeads(true);
+  res.json(resultado);
 });
 
-// ── ROTA: ENVIO MANUAL DE LEAD (site)
+// ── ROTA: ENVIO MANUAL DE LEAD
 app.post('/lead', async (req, res) => {
   const lead = req.body;
   if (!validarLead(lead)) {
@@ -690,14 +771,15 @@ setInterval(() => {
 }, 60 * 60 * 1000);
 
 // ── VERIFICAÇÃO AUTOMÁTICA DA PLANILHA (a cada 1h)
+// SÓ RODA EM HORÁRIO COMERCIAL (a função interna já valida)
 setInterval(() => {
   verificarNovosLeads();
 }, 60 * 60 * 1000);
 
-// ── INICIAR SERVIDOR
+// ── INICIAR SERVIDOR (SEM verificação automática no boot)
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor Ginger rodando na porta ${PORT}`);
-  // Primeira verificação 2 minutos após iniciar (dá tempo de aquecer)
-  setTimeout(() => verificarNovosLeads(), 2 * 60 * 1000);
+  console.log('Verificação automática: a cada 1h, apenas em horário comercial (8h-18h, seg-sex)');
+  console.log('Verificação manual: GET /verificar-leads');
 });

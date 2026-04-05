@@ -278,23 +278,29 @@ function isHorarioComercial() {
   return true;
 }
 
-// ── FUNÇÃO: VERIFICAR SE DATA É RECENTE (últimas 2 horas)
+// ── FUNÇÃO: VERIFICAR SE DATA É RECENTE (últimas 4 horas)
 function isLeadRecente(dataStr) {
   try {
-    // Formato da planilha: "DD/MM/YYYY HH:MM:SS"
+    // Formato da planilha: "DD/MM/YYYY HH:MM:SS" (horário de Brasília)
     const partes = dataStr.split(' ');
     if (partes.length < 2) return false;
     const dataParts = partes[0].split('/');
     const horaParts = partes[1].split(':');
     if (dataParts.length < 3) return false;
-    const dataLead = new Date(
+
+    // Cria data em UTC ajustando +3h (Brasília = UTC-3)
+    const dataLead = new Date(Date.UTC(
       parseInt(dataParts[2]), parseInt(dataParts[1]) - 1, parseInt(dataParts[0]),
-      parseInt(horaParts[0] || 0), parseInt(horaParts[1] || 0), parseInt(horaParts[2] || 0)
-    );
+      parseInt(horaParts[0] || 0) + 3, parseInt(horaParts[1] || 0), parseInt(horaParts[2] || 0)
+    ));
+
     const agora = new Date();
     const diffMs = agora.getTime() - dataLead.getTime();
     const diffHoras = diffMs / (1000 * 60 * 60);
-    return diffHoras <= 2;
+
+    console.log(`Data lead: ${dataStr} | Diff: ${diffHoras.toFixed(1)}h | Recente: ${diffHoras <= 4}`);
+
+    return diffHoras >= 0 && diffHoras <= 4;
   } catch(e) {
     console.log('Erro ao parsear data:', dataStr, e.message);
     return false;

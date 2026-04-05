@@ -331,6 +331,28 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// ── FUNÇÃO: BUSCAR LINHA DO LEAD NA PLANILHA PELO TELEFONE
+async function buscarLinhaPorTelefone(numero) {
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return null;
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!A:I`
+    });
+    const rows = res.data.values;
+    if (!rows) return null;
+    for (let i = 1; i < rows.length; i++) {
+      const telPlanilha = limparTelefone(rows[i][3] || '');
+      if (telPlanilha === numero) return i + 1;
+    }
+    return null;
+  } catch(e) {
+    console.error('Erro ao buscar linha na planilha:', e.message);
+    return null;
+  }
+}
+
 // ── FUNÇÃO: ATUALIZAR COLUNA TRATATIVA NA PLANILHA
 async function atualizarTratativa(rowIndex, valor) {
   try {
@@ -613,9 +635,20 @@ app.post('/whatsapp-zapi', async (req, res) => {
           leadDetectado = parsed;
           console.log('Lead VALIDADO:', parsed.nome, parsed.empresa, 'Classificação:', parsed.classificacao);
 
-          // Atualiza planilha com classificação se veio da planilha
-          if (leadsPlanilha[numero] && parsed.classificacao) {
-            await atualizarTratativa(leadsPlanilha[numero], parsed.classificacao);
+          // Atualiza planilha com classificação
+          if (parsed.classificacao) {
+            let rowIndex = leadsPlanilha[numero];
+            // Se não tem na memória, busca na planilha pelo telefone
+            if (!rowIndex) {
+              rowIndex = await buscarLinhaPorTelefone(numero);
+              if (rowIndex) {
+                leadsPlanilha[numero] = rowIndex;
+                console.log(`Linha encontrada na planilha pelo telefone: ${rowIndex}`);
+              }
+            }
+            if (rowIndex) {
+              await atualizarTratativa(rowIndex, parsed.classificacao);
+            }
           }
         } else {
           console.log('Lead BLOQUEADO (dados incompletos):', JSON.stringify(parsed));

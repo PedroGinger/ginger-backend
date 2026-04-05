@@ -1,12 +1,38 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const { google } = require('googleapis');
 
 const app = express();
 app.use(express.json());
 app.use(cors({
   origin: ['https://ginger.ind.br', 'https://www.ginger.ind.br']
 }));
+
+// ── GOOGLE SHEETS CONFIG
+const SPREADSHEET_ID = '1hXugFnkdT4HxZbHhZlEIoJuH7eZ3guqXjZqhwJj8VdQ';
+const SHEET_NAME = 'Página1';
+let sheetsClient = null;
+
+async function getSheetsClient() {
+  if (sheetsClient) return sheetsClient;
+  try {
+    const creds = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+    const auth = new google.auth.GoogleAuth({
+      credentials: creds,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets']
+    });
+    sheetsClient = google.sheets({ version: 'v4', auth });
+    console.log('Google Sheets conectado com sucesso');
+    return sheetsClient;
+  } catch(e) {
+    console.error('Erro ao conectar Google Sheets:', e.message);
+    return null;
+  }
+}
+
+// ── MAPEAMENTO: número WhatsApp -> linha da planilha (para atualizar TRATATIVA)
+const leadsPlanilha = {};
 
 const SYSTEM_PROMPT = `Você é o agente de atendimento da Ginger Fragrance Design, uma casa de fragrâncias estratégica brasileira, B2B, focada em transformar fragrância em ativo de negócio para indústrias de HPPC, Saneantes, Home Care e Pet Care.
 
@@ -227,6 +253,136 @@ function validarLead(parsed) {
   return true;
 }
 
+// ── FUNÇÃO: LIMPAR NÚMERO DE TELEFONE (só dígitos, formato Brasil)
+function limparTelefone(tel) {
+  if (!tel) return null;
+  let limpo = tel.replace(/\D/g, '');
+  if (limpo.startsWith('0')) limpo = limpo.substring(1);
+  if (!limpo.startsWith('55')) limpo = '55' + limpo;
+  if (limpo.length < 12 || limpo.length > 13) return null;
+  return limpo;
+}
+
+// ── FUNÇÃO: ATUALIZAR COLUNA TRATATIVA NA PLANILHA
+async function atualizarTratativa(rowIndex, valor) {
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!I${rowIndex}`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [[valor]] }
+    });
+    console.log(`Planilha atualizada: linha ${rowIndex} = "${valor}"`);
+  } catch(e) {
+    console.error('Erro ao atualizar planilha:', e.message);
+  }
+}
+
+// ── FUNÇÃO: VERIFICAR NOVOS LEADS NA PLANILHA E ABORDAR
+async function verificarNovosLeads() {
+  console.log('Verificando novos leads na planilha...');
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) {
+      console.log('Google Sheets não disponível, pulando verificação');
+      return;
+    }
+
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!A:I`
+    });
+
+    const rows = res.data.values;
+    if (!rows || rows.length <= 1) {
+      console.log('Planilha vazia ou só cabeçalho');
+      return;
+    }
+
+    // Colunas: A=DATA, B=NOME, C=EMAIL, D=TELEFONE, E=EMPRESA, F=CIDADE, G=FATURAMENTO, H=CNPJ, I=TRATATIVA
+    let abordados = 0;
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const data = row[0] || '';
+      const nome = row[1] || '';
+      const email = row[2] || '';
+      const telefone = row[3] || '';
+      const empresa = row[4] || '';
+      const cidade = row[5] || '';
+      const faturamento = row[6] || '';
+      const cnpj = row[7] || '';
+      const tratativa = row[8] || '';
+
+      // Pula se já tem tratativa (Juliana já chamou ou agente já abordou)
+      if (tratativa.trim()) continue;
+
+      // Pula se não tem telefone (não tem como abordar por WhatsApp)
+      const numeroLimpo = limparTelefone(telefone);
+      if (!numeroLimpo) {
+        console.log(`Linha ${i + 1}: ${nome} sem telefone válido, pulando`);
+        await atualizarTratativa(i + 1, 'sem telefone válido');
+        continue;
+      }
+
+      // Pula se não tem nome
+      if (!nome.trim()) continue;
+
+      console.log(`Abordando lead da planilha: ${nome} (${empresa}) - ${numeroLimpo}`);
+
+      // Monta mensagem proativa personalizada
+      const primeiroNome = nome.split(' ')[0];
+      const mensagemInicial = empresa.trim()
+        ? `Olá, ${primeiroNome}! Tudo bem?\n\nVi que você demonstrou interesse em conhecer a Ginger Fragrance Design. Fico feliz!\n\nA gente desenvolve fragrâncias estratégicas para indústrias como a ${empresa}, ajudando marcas a se diferenciarem com identidade olfativa própria.\n\nPosso entender melhor o que vocês estão buscando?`
+        : `Olá, ${primeiroNome}! Tudo bem?\n\nVi que você demonstrou interesse em conhecer a Ginger Fragrance Design. Fico feliz!\n\nA gente desenvolve fragrâncias estratégicas para indústrias, ajudando marcas a se diferenciarem com identidade olfativa própria.\n\nMe conta um pouco sobre o seu projeto?`;
+
+      // Salva contexto da conversa com dados da planilha
+      conversas[numeroLimpo] = [
+        {
+          role: 'user',
+          content: `[CONTEXTO INTERNO — não mencionar ao lead]\nLead da landing page ginger.ind.br/ginger:\nNome: ${nome}\nEmail: ${email}\nTelefone: ${telefone}\nEmpresa: ${empresa}\nCidade: ${cidade}\nFaturamento: ${faturamento}\nCNPJ: ${cnpj}\n\nUse essas informações para personalizar a conversa. Já enviamos a mensagem de abertura abaixo. Aguarde a resposta do lead para continuar. Não peça informações que já foram fornecidas aqui.`
+        },
+        { role: 'assistant', content: mensagemInicial }
+      ];
+      conversas[numeroLimpo].lastActivity = Date.now();
+
+      // Mapeia o número para a linha da planilha (para atualizar depois)
+      leadsPlanilha[numeroLimpo] = i + 1;
+
+      // Envia mensagem via Z-API
+      const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
+      const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
+
+      try {
+        const zapiResponse = await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-text`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Client-Token': process.env.ZAPI_CLIENT_TOKEN },
+          body: JSON.stringify({
+            phone: numeroLimpo,
+            message: mensagemInicial
+          })
+        });
+        const zapiResult = await zapiResponse.json();
+        console.log(`Mensagem enviada para ${primeiroNome}:`, JSON.stringify(zapiResult));
+
+        // Marca na planilha como abordado
+        await atualizarTratativa(i + 1, 'abordado pelo agente');
+        abordados++;
+
+        // Espera 30 segundos entre cada abordagem (evitar spam)
+        await new Promise(resolve => setTimeout(resolve, 30000));
+      } catch(e) {
+        console.error(`Erro ao enviar para ${nome}:`, e.message);
+      }
+    }
+
+    console.log(`Verificação concluída: ${abordados} novos leads abordados`);
+  } catch(e) {
+    console.error('Erro ao verificar planilha:', e.message);
+  }
+}
+
 // ── ROTA: HEALTH CHECK
 app.get('/', (req, res) => {
   res.json({ status: 'Servidor Ginger online' });
@@ -326,6 +482,12 @@ app.post('/whatsapp-zapi', async (req, res) => {
         if (validarLead(parsed)) {
           leadDetectado = parsed;
           console.log('Lead VALIDADO:', parsed.nome, parsed.empresa, 'Classificação:', parsed.classificacao);
+
+          // ATUALIZAR PLANILHA: se esse número veio da planilha, atualiza a coluna TRATATIVA
+          if (leadsPlanilha[numero] && parsed.classificacao) {
+            await atualizarTratativa(leadsPlanilha[numero], parsed.classificacao);
+            console.log(`Planilha atualizada com classificação: ${parsed.classificacao}`);
+          }
         } else {
           console.log('Lead BLOQUEADO (dados incompletos):', JSON.stringify(parsed));
         }
@@ -405,8 +567,6 @@ app.post('/whatsapp', async (req, res) => {
     if (match) {
       try {
         const parsed = JSON.parse(match[1].trim());
-
-        // VALIDAÇÃO: só envia email se tiver nome + empresa + contato
         if (validarLead(parsed)) {
           leadDetectado = parsed;
         } else {
@@ -428,7 +588,7 @@ app.post('/whatsapp', async (req, res) => {
   }
 });
 
-// ── ROTA: ABORDAGEM PROATIVA (landing page)
+// ── ROTA: ABORDAGEM PROATIVA MANUAL (landing page)
 app.post('/abordar', async (req, res) => {
   const { numero, nome, empresa, cidade, faturamento } = req.body;
   const primeiroNome = nome.split(' ')[0];
@@ -446,15 +606,18 @@ app.post('/abordar', async (req, res) => {
   res.json({ numero, mensagem: mensagemInicial });
 });
 
+// ── ROTA: VERIFICAÇÃO MANUAL DA PLANILHA (para testar)
+app.get('/verificar-leads', async (req, res) => {
+  await verificarNovosLeads();
+  res.json({ status: 'Verificação executada' });
+});
+
 // ── ROTA: ENVIO MANUAL DE LEAD (site)
 app.post('/lead', async (req, res) => {
   const lead = req.body;
-
-  // VALIDAÇÃO: mesmo para envio manual, exigir contato
   if (!validarLead(lead)) {
     return res.status(400).json({ error: 'Lead sem dados de contato suficientes' });
   }
-
   try {
     await enviarEmailLead(lead);
     res.json({ success: true });
@@ -465,7 +628,6 @@ app.post('/lead', async (req, res) => {
 
 // ── FUNÇÃO: ENVIAR EMAIL DE LEAD via Resend
 async function enviarEmailLead(lead, numero = null) {
-  // TRAVA FINAL: nunca enviar email sem contato
   if (!validarLead(lead)) {
     console.log('EMAIL BLOQUEADO: lead sem contato suficiente:', lead.nome, lead.empresa);
     return;
@@ -527,5 +689,15 @@ setInterval(() => {
   });
 }, 60 * 60 * 1000);
 
+// ── VERIFICAÇÃO AUTOMÁTICA DA PLANILHA (a cada 1h)
+setInterval(() => {
+  verificarNovosLeads();
+}, 60 * 60 * 1000);
+
+// ── INICIAR SERVIDOR
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor Ginger rodando na porta ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Servidor Ginger rodando na porta ${PORT}`);
+  // Primeira verificação 2 minutos após iniciar (dá tempo de aquecer)
+  setTimeout(() => verificarNovosLeads(), 2 * 60 * 1000);
+});

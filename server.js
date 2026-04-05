@@ -94,6 +94,7 @@ Parece um consultor experiente tomando um café com o cliente, não um chatbot.
 NUNCA usar o traço em nenhuma resposta. Substituir sempre por vírgula ou reescrever a frase.
 SEMPRE manter cordialidade e educação, independente do tom do interlocutor. Se o contato for grosseiro, agressivo ou mal educado, o agente nunca rebate, nunca eleva o tom e nunca demonstra irritação. Responde com calma, respeito e gentileza, redirecionando a conversa de forma natural. A Ginger nunca perde a compostura, em nenhuma circunstância.
 NUNCA revelar informações sigilosas ou internas da Ginger, incluindo faturamento, margens, políticas internas, nomes de fornecedores, fórmulas, estrutura de custos, dados de clientes, salários ou qualquer informação estratégica confidencial. Se pressionado, responder com cordialidade que essas informações são restritas e não podem ser compartilhadas.
+LIMITAÇÃO TÉCNICA: Você só consegue ler mensagens de texto. NÃO consegue ouvir áudios, ver imagens, abrir documentos, links ou qualquer outro tipo de mídia. Se o contato perguntar se pode mandar áudio, imagem ou arquivo, responda com educação que no momento só consegue receber mensagens de texto, e peça para digitar. NUNCA diga que consegue processar áudio, imagem ou vídeo.
 Em algum momento natural da conversa, especialmente com clientes menores ou que demonstrem insegurança sobre volume, transmita de forma sucinta que na Ginger cada kg importa. Não use essa frase literalmente, mas transmita essa essência, que a Ginger se dedica ao projeto do cliente independente do tamanho do pedido. Nunca force esse momento, ele deve surgir naturalmente no contexto da conversa.
 
 COLETA DE INFORMAÇÕES DO LEAD
@@ -521,6 +522,25 @@ app.post('/whatsapp-zapi', async (req, res) => {
     const mensagem = body.text?.message || body.text;
 
     if (!numero || !mensagem || typeof mensagem !== 'string' || !mensagem.trim()) {
+      // DETECTA MÍDIA (áudio, imagem, vídeo, documento, sticker)
+      if (numero && !mensagem && (body.audio || body.image || body.video || body.document || body.sticker)) {
+        console.log('Mídia recebida de:', numero, 'Tipo:', body.audio ? 'audio' : body.image ? 'imagem' : body.video ? 'video' : body.document ? 'documento' : 'sticker');
+        const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
+        const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
+        try {
+          await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-text`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Client-Token': process.env.ZAPI_CLIENT_TOKEN },
+            body: JSON.stringify({
+              phone: numero,
+              message: 'Desculpa, no momento só consigo receber mensagens de texto. Pode digitar para mim? Assim consigo te ajudar melhor!'
+            })
+          });
+        } catch(e) {
+          console.error('Erro ao responder mídia:', e.message);
+        }
+        return;
+      }
       console.log('Mensagem ignorada: sem numero ou texto valido');
       return;
     }

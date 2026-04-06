@@ -284,16 +284,14 @@ function limparTelefone(tel) {
   return limpo;
 }
 
-// ── FUNÇÃO: VERIFICAR SE É HORÁRIO COMERCIAL (8h-18h, seg-sex, horário de Brasília)
+// ── FUNÇÃO: VERIFICAR SE É HORÁRIO COMERCIAL (8h-20h, todos os dias, horário de Brasília)
 function isHorarioComercial() {
   const agora = new Date();
   const brasilOffset = -3;
   const utc = agora.getTime() + (agora.getTimezoneOffset() * 60000);
   const brasil = new Date(utc + (brasilOffset * 3600000));
   const hora = brasil.getHours();
-  const dia = brasil.getDay(); // 0=dom, 6=sab
-  if (dia === 0 || dia === 6) return false;
-  if (hora < 8 || hora >= 18) return false;
+  if (hora < 8 || hora >= 20) return false;
   return true;
 }
 
@@ -854,11 +852,11 @@ setInterval(() => {
   });
 }, 60 * 60 * 1000);
 
-// ── VERIFICAÇÃO AUTOMÁTICA DA PLANILHA (a cada 1h)
-// SÓ RODA EM HORÁRIO COMERCIAL (a função interna já valida)
+// ── VERIFICAÇÃO AUTOMÁTICA DA PLANILHA (a cada 10 minutos)
+// Funciona todos os dias, apenas em horário comercial (8h-20h)
 setInterval(() => {
   verificarNovosLeads();
-}, 60 * 60 * 1000);
+}, 10 * 60 * 1000);
 
 // ── INICIAR SERVIDOR (SEM verificação automática no boot)
 const PORT = process.env.PORT || 3000;

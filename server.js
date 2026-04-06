@@ -231,8 +231,16 @@ Especialistas comerciais: Juliana Cardoso (juliana.cardoso@ginger.ind.br) e Jenn
 Email remetente do sistema: lead@ginger.ind.br
 WhatsApp do agente: +55 19 98354-0110
 
+⚠️ QUANDO GERAR O BLOCO DE DADOS — REGRA CRÍTICA ⚠️
+NÃO gere o bloco %%%LEAD_DATA%%% apenas porque tem nome, empresa e contato. O bloco só deve ser gerado quando a conversa chegou a um ponto de CONCLUSÃO, ou seja:
+- Para BOM: você já coletou informações suficientes, já entendeu o projeto, já pediu CNPJ e contato, e está pronto para encerrar e acionar o comercial.
+- Para POTENCIAL_FUTURO: você já entendeu que o volume é baixo ou não tem CNPJ, e vai direcionar para revendas.
+- Para RUIM: você já confirmou que não há interesse real.
+
+Se a conversa ainda está em andamento, se você ainda está fazendo perguntas, se ainda está entendendo o projeto, NÃO gere o bloco. Continue conversando. O bloco é o ÚLTIMO passo, não o primeiro.
+
 FORMATO ESPECIAL DE RESPOSTA PARA EXTRAÇÃO DE DADOS
-Sempre que tiver coletado pelo menos nome, empresa, CONTATO (email ou telefone) e uma dor ou projeto identificado, inclua ao final da sua resposta um bloco JSON com os dados coletados, nesse formato exato:
+Somente quando a conversa atingir um ponto de conclusão conforme descrito acima, inclua ao final da sua resposta um bloco JSON com os dados coletados, nesse formato exato:
 
 %%%LEAD_DATA%%%
 {
@@ -630,13 +638,15 @@ app.post('/whatsapp-zapi', async (req, res) => {
         }
 
         if (validarLead(parsed)) {
-          leadDetectado = parsed;
-          console.log('Lead VALIDADO:', parsed.nome, parsed.empresa, 'Classificação:', parsed.classificacao);
+          // SÓ PROCESSA SE TIVER CLASSIFICAÇÃO PREENCHIDA
+          const temClassificacao = parsed.classificacao && parsed.classificacao.trim() && parsed.classificacao.trim() !== '-';
+          
+          if (temClassificacao) {
+            leadDetectado = parsed;
+            console.log('Lead VALIDADO:', parsed.nome, parsed.empresa, 'Classificação:', parsed.classificacao);
 
-          // Atualiza planilha com classificação
-          if (parsed.classificacao) {
+            // Atualiza planilha com classificação
             let rowIndex = leadsPlanilha[numero];
-            // Se não tem na memória, busca na planilha pelo telefone
             if (!rowIndex) {
               rowIndex = await buscarLinhaPorTelefone(numero);
               if (rowIndex) {
@@ -647,6 +657,8 @@ app.post('/whatsapp-zapi', async (req, res) => {
             if (rowIndex) {
               await atualizarTratativa(rowIndex, parsed.classificacao);
             }
+          } else {
+            console.log('Lead com dados mas SEM classificação, aguardando conclusão da conversa:', parsed.nome);
           }
         } else {
           console.log('Lead BLOQUEADO (dados incompletos):', JSON.stringify(parsed));

@@ -839,6 +839,13 @@ async function enviarEmailLead(lead, numero = null) {
   }
 }
 
+// ── AUTO-PING: mantém servidor acordado (a cada 14 minutos)
+setInterval(() => {
+  fetch('https://ginger-backend-8ftm.onrender.com/')
+    .then(() => console.log('Auto-ping: servidor mantido acordado'))
+    .catch(() => console.log('Auto-ping: falhou'));
+}, 14 * 60 * 1000);
+
 // ── LIMPEZA DE HISTÓRICO INATIVO (a cada 2h)
 setInterval(() => {
   const limite = Date.now() - (2 * 60 * 60 * 1000);

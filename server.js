@@ -303,7 +303,7 @@ function isHorarioComercial() {
   return true;
 }
 
-// ── FUNÇÃO: VERIFICAR SE DATA É RECENTE (últimas 4 horas)
+// ── FUNÇÃO: VERIFICAR SE DATA É RECENTE (últimas 24 horas)
 function isLeadRecente(dataStr) {
   try {
     // Formato da planilha: "DD/MM/YYYY HH:MM:SS" (horário de Brasília)
@@ -323,9 +323,9 @@ function isLeadRecente(dataStr) {
     const diffMs = agora.getTime() - dataLead.getTime();
     const diffHoras = diffMs / (1000 * 60 * 60);
 
-    console.log(`Data lead: ${dataStr} | Diff: ${diffHoras.toFixed(1)}h | Recente: ${diffHoras <= 4}`);
+    console.log(`Data lead: ${dataStr} | Diff: ${diffHoras.toFixed(1)}h | Recente: ${diffHoras <= 24}`);
 
-    return diffHoras >= 0 && diffHoras <= 4;
+    return diffHoras >= 0 && diffHoras <= 24;
   } catch(e) {
     console.log('Erro ao parsear data:', dataStr, e.message);
     return false;

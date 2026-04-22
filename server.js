@@ -31,10 +31,66 @@ async function getSheetsClient() {
   }
 }
 
+// ══════════════════════════════════════════════════════════════
+// ── UPSTASH REDIS CONFIG (persistência de conversas)
+// ══════════════════════════════════════════════════════════════
+const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL;
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+async function redis(...args) {
+  try {
+    const response = await fetch(REDIS_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${REDIS_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(args)
+    });
+    const data = await response.json();
+    return data.result;
+  } catch (e) {
+    console.error('Redis erro:', e.message);
+    return null;
+  }
+}
+
+// ── Histórico de conversas (Redis)
+async function getConversa(numero) {
+  const data = await redis('GET', `conversa:${numero}`);
+  if (!data) return null;
+  try { return JSON.parse(data); } catch (e) { return null; }
+}
+
+async function saveConversa(numero, messages) {
+  // TTL de 24 horas (86400 segundos) — renova a cada interação
+  await redis('SET', `conversa:${numero}`, JSON.stringify(messages), 'EX', 86400);
+}
+
+// ── Números já abordados (Redis SET — persiste entre reinícios)
+async function isNumeroAbordado(numero) {
+  const result = await redis('SISMEMBER', 'numeros_abordados', numero);
+  return result === 1;
+}
+
+async function marcarNumeroAbordado(numero) {
+  await redis('SADD', 'numeros_abordados', numero);
+}
+
+// ── Mapeamento lead → linha da planilha (Redis HASH)
+async function getLeadPlanilha(numero) {
+  const result = await redis('HGET', 'leads_planilha', numero);
+  return result ? parseInt(result) : null;
+}
+
+async function setLeadPlanilha(numero, rowIndex) {
+  await redis('HSET', 'leads_planilha', numero, rowIndex.toString());
+}
+
+// ══════════════════════════════════════════════════════════════
 // ── TRAVAS DE SEGURANÇA
-const numerosJaAbordados = new Set();   // nunca manda duas vezes para o mesmo número
-let verificacaoRodando = false;          // impede execução simultânea
-const leadsPlanilha = {};                // número -> linha da planilha
+// ══════════════════════════════════════════════════════════════
+let verificacaoRodando = false;
 
 const SYSTEM_PROMPT = `Você é o agente de atendimento da Ginger Fragrance Design, uma casa de fragrâncias estratégica brasileira, B2B, focada em transformar fragrância em ativo de negócio para indústrias de HPPC, Saneantes, Home Care e Pet Care.
 
@@ -269,9 +325,6 @@ Antes de escrever %%%LEAD_DATA%%%, verifique:
 3. O campo "empresa" está preenchido? Se não, NÃO gere o bloco.
 Se qualquer uma dessas validações falhar, continue a conversa e colete a informação faltante. NUNCA gere o bloco incompleto.`;
 
-// ── HISTÓRICO DE CONVERSAS (WhatsApp)
-const conversas = {};
-
 // ── FUNÇÃO: VALIDAR LEAD ANTES DE ENVIAR EMAIL
 function validarLead(parsed) {
   if (!parsed.nome || !parsed.nome.trim()) return false;
@@ -306,14 +359,12 @@ function isHorarioComercial() {
 // ── FUNÇÃO: VERIFICAR SE DATA É RECENTE (últimas 24 horas)
 function isLeadRecente(dataStr) {
   try {
-    // Formato da planilha: "DD/MM/YYYY HH:MM:SS" (horário de Brasília)
     const partes = dataStr.split(' ');
     if (partes.length < 2) return false;
     const dataParts = partes[0].split('/');
     const horaParts = partes[1].split(':');
     if (dataParts.length < 3) return false;
 
-    // Cria data em UTC ajustando +3h (Brasília = UTC-3)
     const dataLead = new Date(Date.UTC(
       parseInt(dataParts[2]), parseInt(dataParts[1]) - 1, parseInt(dataParts[0]),
       parseInt(horaParts[0] || 0) + 3, parseInt(horaParts[1] || 0), parseInt(horaParts[2] || 0)
@@ -378,13 +429,11 @@ async function atualizarTratativa(rowIndex, valor) {
 
 // ── FUNÇÃO: VERIFICAR NOVOS LEADS NA PLANILHA E ABORDAR
 async function verificarNovosLeads(manual = false) {
-  // TRAVA 1: impedir execução simultânea
   if (verificacaoRodando) {
     console.log('Verificação já em andamento, pulando');
     return { status: 'já em andamento' };
   }
 
-  // TRAVA 2: só funciona em horário comercial (exceto quando disparado manualmente)
   if (!manual && !isHorarioComercial()) {
     console.log('Fora do horário comercial, pulando verificação automática');
     return { status: 'fora do horário comercial (automático)' };
@@ -413,12 +462,10 @@ async function verificarNovosLeads(manual = false) {
       return { status: 'planilha vazia' };
     }
 
-    // Colunas: A=DATA, B=NOME, C=EMAIL, D=TELEFONE, E=EMPRESA, F=CIDADE, G=FATURAMENTO, H=CNPJ, I=TRATATIVA
     let abordados = 0;
     const MAX_POR_RODADA = 5;
 
     for (let i = 1; i < rows.length; i++) {
-      // TRAVA 3: máximo 5 leads por rodada
       if (abordados >= MAX_POR_RODADA) {
         console.log(`Limite de ${MAX_POR_RODADA} leads por rodada atingido`);
         break;
@@ -435,15 +482,10 @@ async function verificarNovosLeads(manual = false) {
       const cnpj = row[7] || '';
       const tratativa = row[8] || '';
 
-      // TRAVA 4: pula se já tem tratativa
       if (tratativa.trim()) continue;
 
-      // TRAVA 5: só leads das últimas 2 horas
-      if (!isLeadRecente(data)) {
-        continue;
-      }
+      if (!isLeadRecente(data)) continue;
 
-      // TRAVA 6: pula se não tem telefone válido
       const numeroLimpo = limparTelefone(telefone);
       if (!numeroLimpo) {
         console.log(`Linha ${i + 1}: ${nome} sem telefone válido, marcando na planilha`);
@@ -451,11 +493,11 @@ async function verificarNovosLeads(manual = false) {
         continue;
       }
 
-      // TRAVA 7: pula se não tem nome
       if (!nome.trim()) continue;
 
-      // TRAVA 8: nunca mandar para o mesmo número duas vezes
-      if (numerosJaAbordados.has(numeroLimpo)) {
+      // REDIS: verifica se número já foi abordado (persiste entre reinícios)
+      const jaAbordado = await isNumeroAbordado(numeroLimpo);
+      if (jaAbordado) {
         console.log(`Linha ${i + 1}: ${nome} (${numeroLimpo}) já foi abordado antes, pulando`);
         await atualizarTratativa(i + 1, 'duplicado, já abordado');
         continue;
@@ -463,13 +505,11 @@ async function verificarNovosLeads(manual = false) {
 
       console.log(`Abordando lead: ${nome} (${empresa}) - ${numeroLimpo}`);
 
-      // TRAVA 9: marca na planilha ANTES de enviar (previne duplicata)
       await atualizarTratativa(i + 1, 'abordado pelo agente');
 
-      // TRAVA 10: registra o número na memória
-      numerosJaAbordados.add(numeroLimpo);
+      // REDIS: registra número como abordado (persiste entre reinícios)
+      await marcarNumeroAbordado(numeroLimpo);
 
-      // Monta mensagem proativa personalizada
       const primeiroNome = nome.split(' ')[0];
       const nomeEmpresa = empresa.trim() && empresa.trim().toLowerCase() !== 'não tenho' && empresa.trim().toLowerCase() !== 'nao tenho';
 
@@ -477,18 +517,17 @@ async function verificarNovosLeads(manual = false) {
         ? `Olá, ${primeiroNome}! Tudo bem?\n\nVi que você demonstrou interesse em conhecer a Ginger Fragrance Design. Fico feliz!\n\nA gente desenvolve fragrâncias estratégicas para indústrias como a ${empresa}, ajudando marcas a se diferenciarem com identidade olfativa própria.\n\nPosso entender melhor o que vocês estão buscando?`
         : `Olá, ${primeiroNome}! Tudo bem?\n\nVi que você demonstrou interesse em conhecer a Ginger Fragrance Design. Fico feliz!\n\nA gente desenvolve fragrâncias estratégicas para indústrias, ajudando marcas a se diferenciarem com identidade olfativa própria.\n\nMe conta um pouco sobre o seu projeto?`;
 
-      // Salva contexto da conversa
-      conversas[numeroLimpo] = [
+      // REDIS: salva contexto da conversa (persiste entre reinícios)
+      const historico = [
         {
           role: 'user',
           content: `[CONTEXTO INTERNO — não mencionar ao lead]\nLead da landing page ginger.ind.br/ginger:\nNome: ${nome}\nEmail: ${email}\nTelefone: ${telefone}\nEmpresa: ${empresa}\nCidade: ${cidade}\nFaturamento: ${faturamento}\nCNPJ: ${cnpj}\n\nUse essas informações para personalizar a conversa. Já enviamos a mensagem de abertura abaixo. Aguarde a resposta do lead para continuar. Não peça informações que já foram fornecidas aqui.`
         },
         { role: 'assistant', content: mensagemInicial }
       ];
-      conversas[numeroLimpo].lastActivity = Date.now();
-      leadsPlanilha[numeroLimpo] = i + 1;
+      await saveConversa(numeroLimpo, historico);
+      await setLeadPlanilha(numeroLimpo, i + 1);
 
-      // Envia mensagem via Z-API
       const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
       const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
 
@@ -508,7 +547,6 @@ async function verificarNovosLeads(manual = false) {
         console.error(`Erro ao enviar para ${nome}:`, e.message);
       }
 
-      // TRAVA 11: delay real de 60 segundos entre cada mensagem
       if (abordados < MAX_POR_RODADA) {
         console.log('Aguardando 60 segundos antes do próximo envio...');
         await delay(60000);
@@ -527,7 +565,7 @@ async function verificarNovosLeads(manual = false) {
 
 // ── ROTA: HEALTH CHECK
 app.get('/', (req, res) => {
-  res.json({ status: 'Servidor Ginger online' });
+  res.json({ status: 'Servidor Ginger online', redis: REDIS_URL ? 'configurado' : 'não configurado' });
 });
 
 // ── ROTA: CHAT DO SITE
@@ -568,7 +606,6 @@ app.post('/whatsapp-zapi', async (req, res) => {
     const mensagem = body.text?.message || body.text;
 
     if (!numero || !mensagem || typeof mensagem !== 'string' || !mensagem.trim()) {
-      // DETECTA MÍDIA (áudio, imagem, vídeo, documento, sticker)
       if (numero && !mensagem && (body.audio || body.image || body.video || body.document || body.sticker)) {
         console.log('Mídia recebida de:', numero, 'Tipo:', body.audio ? 'audio' : body.image ? 'imagem' : body.video ? 'video' : body.document ? 'documento' : 'sticker');
         const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
@@ -593,16 +630,14 @@ app.post('/whatsapp-zapi', async (req, res) => {
 
     console.log('Processando mensagem de:', numero, 'Texto:', mensagem.substring(0, 100));
 
-    if (!conversas[numero]) {
-      conversas[numero] = [];
-      conversas[numero].lastActivity = Date.now();
-    }
+    // REDIS: carrega histórico persistido (sobrevive a reinícios)
+    let historico = await getConversa(numero) || [];
 
-    conversas[numero].push({ role: 'user', content: mensagem });
-    conversas[numero].lastActivity = Date.now();
-    if (conversas[numero].length > 20) {
-      conversas[numero] = conversas[numero].slice(-20);
-      conversas[numero].lastActivity = Date.now();
+    historico.push({ role: 'user', content: mensagem });
+
+    // Limita a 20 mensagens
+    if (historico.length > 20) {
+      historico = historico.slice(-20);
     }
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -616,7 +651,7 @@ app.post('/whatsapp-zapi', async (req, res) => {
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1000,
         system: SYSTEM_PROMPT,
-        messages: conversas[numero].filter(m => m.role && m.content)
+        messages: historico.filter(m => m.role && m.content)
       })
     });
 
@@ -638,19 +673,18 @@ app.post('/whatsapp-zapi', async (req, res) => {
         }
 
         if (validarLead(parsed)) {
-          // SÓ PROCESSA SE TIVER CLASSIFICAÇÃO PREENCHIDA
           const temClassificacao = parsed.classificacao && parsed.classificacao.trim() && parsed.classificacao.trim() !== '-';
           
           if (temClassificacao) {
             leadDetectado = parsed;
             console.log('Lead VALIDADO:', parsed.nome, parsed.empresa, 'Classificação:', parsed.classificacao);
 
-            // Atualiza planilha com classificação
-            let rowIndex = leadsPlanilha[numero];
+            // REDIS: busca linha da planilha
+            let rowIndex = await getLeadPlanilha(numero);
             if (!rowIndex) {
               rowIndex = await buscarLinhaPorTelefone(numero);
               if (rowIndex) {
-                leadsPlanilha[numero] = rowIndex;
+                await setLeadPlanilha(numero, rowIndex);
                 console.log(`Linha encontrada na planilha pelo telefone: ${rowIndex}`);
               }
             }
@@ -669,7 +703,12 @@ app.post('/whatsapp-zapi', async (req, res) => {
     }
 
     const resposta = raw.replace(regex, '').trim();
-    conversas[numero].push({ role: 'assistant', content: raw });
+
+    // Salva a resposta do assistente no histórico
+    historico.push({ role: 'assistant', content: raw });
+
+    // REDIS: salva histórico atualizado (persiste entre reinícios)
+    await saveConversa(numero, historico);
 
     const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
     const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
@@ -698,17 +737,20 @@ app.post('/whatsapp-zapi', async (req, res) => {
 app.post('/whatsapp', async (req, res) => {
   const { numero, mensagem } = req.body;
 
-  if (!conversas[numero]) {
-    conversas[numero] = [];
-    conversas[numero].push({
+  // REDIS: carrega histórico persistido
+  let historico = await getConversa(numero);
+
+  if (!historico) {
+    historico = [];
+    historico.push({
       role: 'assistant',
       content: 'Olá! Tudo bem?\n\nSou da equipe Ginger. Pode falar à vontade, seja sobre um produto que você quer lançar, uma linha que precisa de ajuste, ou só uma dúvida sobre como a gente trabalha.\n\nO que te trouxe até aqui?'
     });
   }
 
-  conversas[numero].push({ role: 'user', content: mensagem });
-  if (conversas[numero].length > 20) {
-    conversas[numero] = conversas[numero].slice(-20);
+  historico.push({ role: 'user', content: mensagem });
+  if (historico.length > 20) {
+    historico = historico.slice(-20);
   }
 
   try {
@@ -723,7 +765,7 @@ app.post('/whatsapp', async (req, res) => {
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1000,
         system: SYSTEM_PROMPT,
-        messages: conversas[numero]
+        messages: historico
       })
     });
 
@@ -744,7 +786,10 @@ app.post('/whatsapp', async (req, res) => {
     }
 
     const resposta = raw.replace(regex, '').trim();
-    conversas[numero].push({ role: 'assistant', content: raw });
+    historico.push({ role: 'assistant', content: raw });
+
+    // REDIS: salva histórico atualizado
+    await saveConversa(numero, historico);
 
     if (leadDetectado) {
       await enviarEmailLead(leadDetectado, numero);
@@ -763,13 +808,16 @@ app.post('/abordar', async (req, res) => {
 
   const mensagemInicial = `Olá, ${primeiroNome}! Tudo bem?\n\nVi que você demonstrou interesse em conhecer melhor a Ginger. Fico feliz em ter você aqui.\n\nSou da equipe Ginger Fragrance Design. A gente desenvolve fragrâncias estratégicas para indústrias como a ${empresa}, ajudando marcas a se diferenciarem com identidade olfativa própria.\n\nPosso entender melhor o que vocês estão buscando?`;
 
-  conversas[numero] = [
+  const historico = [
     {
       role: 'user',
       content: `[CONTEXTO INTERNO — não mencionar ao lead]\nLead qualificado da landing page:\nNome: ${nome}\nEmpresa: ${empresa}\nCidade: ${cidade}\nFaturamento: ${faturamento}\n\nUse essas informações para personalizar a conversa. Já enviamos a mensagem de abertura abaixo. Aguarde a resposta do lead para continuar.`
     },
     { role: 'assistant', content: mensagemInicial }
   ];
+
+  // REDIS: salva histórico
+  await saveConversa(numero, historico);
 
   res.json({ numero, mensagem: mensagemInicial });
 });
@@ -791,6 +839,19 @@ app.post('/lead', async (req, res) => {
     res.json({ success: true });
   } catch(error) {
     res.status(500).json({ error: 'Erro ao enviar email' });
+  }
+});
+
+// ── ROTA: TESTAR REDIS (debug)
+app.get('/redis-test', async (req, res) => {
+  try {
+    const testKey = 'ginger_test_' + Date.now();
+    await redis('SET', testKey, 'ok', 'EX', 10);
+    const result = await redis('GET', testKey);
+    await redis('DEL', testKey);
+    res.json({ status: 'Redis funcionando', resultado: result });
+  } catch(e) {
+    res.status(500).json({ status: 'Redis com erro', erro: e.message });
   }
 });
 
@@ -856,24 +917,24 @@ setInterval(() => {
     .catch(() => console.log('Auto-ping: falhou'));
 }, 14 * 60 * 1000);
 
-// ── LIMPEZA DE HISTÓRICO INATIVO (a cada 2h)
-setInterval(() => {
-  const limite = Date.now() - (2 * 60 * 60 * 1000);
-  Object.keys(conversas).forEach(num => {
-    if (conversas[num].lastActivity < limite) delete conversas[num];
-  });
-}, 60 * 60 * 1000);
-
 // ── VERIFICAÇÃO AUTOMÁTICA DA PLANILHA (a cada 10 minutos)
-// Funciona todos os dias, apenas em horário comercial (8h-20h)
 setInterval(() => {
   verificarNovosLeads();
 }, 10 * 60 * 1000);
 
-// ── INICIAR SERVIDOR (SEM verificação automática no boot)
+// ── INICIAR SERVIDOR
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Servidor Ginger rodando na porta ${PORT}`);
-  console.log('Verificação automática: a cada 1h, apenas em horário comercial (8h-18h, seg-sex)');
+  console.log('Redis Upstash: ' + (REDIS_URL ? 'CONFIGURADO' : 'NÃO CONFIGURADO'));
+  console.log('Histórico de conversas: PERSISTIDO NO REDIS');
+  console.log('Verificação automática: a cada 10 minutos, apenas em horário comercial');
   console.log('Verificação manual: GET /verificar-leads');
+  console.log('Teste Redis: GET /redis-test');
+
+  // Testa conexão Redis no boot
+  if (REDIS_URL) {
+    const teste = await redis('PING');
+    console.log('Redis PING:', teste === 'PONG' ? 'CONECTADO' : 'FALHOU');
+  }
 });

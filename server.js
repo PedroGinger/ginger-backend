@@ -587,8 +587,10 @@ app.post('/chat', async (req, res) => {
       })
     });
     const data = await response.json();
+    if (!data.content) console.log('CLAUDE ERRO /chat:', JSON.stringify(data).substring(0, 800));
     res.json(data);
   } catch (error) {
+    console.error('Erro /chat:', error.message);
     res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
@@ -656,6 +658,7 @@ app.post('/whatsapp-zapi', async (req, res) => {
     });
 
     const data = await response.json();
+    if (!data.content) console.log('CLAUDE ERRO /zapi:', JSON.stringify(data).substring(0, 800));
     const raw = data.content?.[0]?.text || 'Não consegui processar. Pode repetir?';
 
     console.log('Resposta gerada para:', numero);
@@ -770,6 +773,7 @@ app.post('/whatsapp', async (req, res) => {
     });
 
     const data = await response.json();
+    if (!data.content) console.log('CLAUDE ERRO /whatsapp:', JSON.stringify(data).substring(0, 800));
     const raw = data.content?.[0]?.text || 'Não consegui processar. Pode repetir?';
 
     const regex = /%%%LEAD_DATA%%%([\s\S]*?)%%%END_LEAD_DATA%%%/;
@@ -855,6 +859,31 @@ app.get('/redis-test', async (req, res) => {
   }
 });
 
+// ── ROTA: TESTAR CLAUDE (debug)
+app.get('/claude-test', async (req, res) => {
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'Diga apenas: ok' }]
+      })
+    });
+    const data = await response.json();
+    console.log('CLAUDE TEST resposta:', JSON.stringify(data).substring(0, 800));
+    res.json({ status: response.status, data });
+  } catch(e) {
+    console.error('CLAUDE TEST erro:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+
 // ── FUNÇÃO: ENVIAR EMAIL DE LEAD via Resend
 async function enviarEmailLead(lead, numero = null) {
   if (!validarLead(lead)) {
@@ -931,6 +960,7 @@ app.listen(PORT, async () => {
   console.log('Verificação automática: a cada 10 minutos, apenas em horário comercial');
   console.log('Verificação manual: GET /verificar-leads');
   console.log('Teste Redis: GET /redis-test');
+  console.log('Teste Claude: GET /claude-test');
 
   // Testa conexão Redis no boot
   if (REDIS_URL) {

@@ -155,6 +155,10 @@ Se o lead perguntar sobre frascos, rótulos, embalagens, envase ou produto acaba
 Essa distinção é fundamental para não gerar expectativa errada. A Ginger é casa de FRAGRÂNCIAS, não fábrica de cosméticos ou perfumes.
 
 TOM DE VOZ
+
+⚠️ REGRA DE TAMANHO DA RESPOSTA — PRIORIDADE MÁXIMA, VALE PARA TODOS OS MODOS ⚠️
+Você está conversando pelo WhatsApp, não escrevendo e-mail. TODA resposta deve ser curta, no máximo 2 a 3 frases curtas. Nunca escreva parágrafos longos, blocos de texto, listas, ou explicações extensas. Diga uma coisa de cada vez e devolva a palavra ao lead, de preferência com uma pergunta simples no fim. Se você tem muito a dizer, divida ao longo da conversa, nunca despeje tudo de uma vez. Mensagem longa parece robô e afasta o lead. Na dúvida entre falar mais ou falar menos, fale menos. Seja breve sempre, mesmo no MODO COMPLETO.
+
 Humano, próximo e natural, como uma conversa real entre profissionais.
 Consultivo e maduro, mas sem ser formal ou engessado.
 Faz perguntas de forma curiosa e genuína, não como formulário.
@@ -255,7 +259,7 @@ MODO RÁPIDO (lead com pressa ou que já sabe o que quer):
 Quando o lead demonstrar pressa, querer fechar rápido, já tiver uma fragrância ou quantidade em mente, ou simplesmente não quiser conversar muito, o agente DEVE ser direto e curto. Respostas de no máximo 2 a 3 linhas. Sem explicações longas, sem perguntas abertas, sem apresentar o método ou a empresa. Apenas coletar as informações cruciais para o comercial: Nome, Empresa, CNPJ, Email, Telefone e quantidade desejada. Assim que tiver esses 6 dados, classificar como BOM e enviar. Não insistir em mais informações.
 
 MODO COMPLETO (lead tranquilo e receptivo):
-Quando o lead estiver respondendo com calma e detalhando seu projeto, seguir com o briefing completo normalmente, coletando todos os 11 campos e entendendo a dor antes de encerrar.
+Quando o lead estiver respondendo com calma e detalhando seu projeto, seguir com o briefing completo normalmente, coletando todos os 11 campos e entendendo a dor antes de encerrar. Mesmo neste modo, mantenha cada mensagem curta (2 a 3 frases) e faça uma pergunta de cada vez. Briefing completo se constrói ao longo de várias mensagens curtas, nunca em um texto longo só.
 
 COMO IDENTIFICAR O MODO:
 - Lead manda mensagens curtas, diretas, pede para "fechar logo" ou "só preciso de X" = MODO RÁPIDO
@@ -388,6 +392,30 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// ── FUNÇÃO: DELAY HUMANIZADO PARA RESPOSTA DO AGENTE (40s a 75s, aleatório)
+// Evita o padrão de robô (resposta instantânea) e reduz risco de bloqueio pela Meta.
+function delayHumanizado() {
+  const ms = 40000 + Math.floor(Math.random() * 35000); // 40000 a 75000 ms
+  console.log(`Delay humanizado antes de responder: ${(ms / 1000).toFixed(0)}s`);
+  return delay(ms);
+}
+
+// ── FUNÇÃO: ENVIAR STATUS "DIGITANDO" PELA Z-API (opcional, falha silenciosa)
+async function enviarDigitando(numero, durationMs = 5000) {
+  const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
+  const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
+  try {
+    await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-chat-state`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Client-Token': process.env.ZAPI_CLIENT_TOKEN },
+      body: JSON.stringify({ phone: numero, chatState: 'composing', duration: Math.round(durationMs / 1000) })
+    });
+  } catch(e) {
+    // Não afeta o envio da mensagem. Se a Z-API não suportar este endpoint, apenas ignora.
+    console.log('Aviso: não foi possível enviar status digitando:', e.message);
+  }
+}
+
 // ── FUNÇÃO: BUSCAR LINHA DO LEAD NA PLANILHA PELO TELEFONE
 async function buscarLinhaPorTelefone(numero) {
   try {
@@ -425,6 +453,15 @@ async function atualizarTratativa(rowIndex, valor) {
   } catch(e) {
     console.error('Erro ao atualizar planilha:', e.message);
   }
+}
+
+// ── FUNÇÃO: VERIFICAR SE ENVIO DA Z-API FOI BEM-SUCEDIDO
+// Z-API retorna messageId/zaapId/id em envio OK. Instância desconectada retorna erro / sem id.
+function envioZapiOk(httpOk, zapiResult) {
+  if (!httpOk) return false;
+  if (!zapiResult || typeof zapiResult !== 'object') return false;
+  if (zapiResult.error) return false;
+  return Boolean(zapiResult.messageId || zapiResult.zaapId || zapiResult.id);
 }
 
 // ── FUNÇÃO: VERIFICAR NOVOS LEADS NA PLANILHA E ABORDAR
@@ -505,17 +542,45 @@ async function verificarNovosLeads(manual = false) {
 
       console.log(`Abordando lead: ${nome} (${empresa}) - ${numeroLimpo}`);
 
-      await atualizarTratativa(i + 1, 'abordado pelo agente');
-
-      // REDIS: registra número como abordado (persiste entre reinícios)
-      await marcarNumeroAbordado(numeroLimpo);
-
       const primeiroNome = nome.split(' ')[0];
       const nomeEmpresa = empresa.trim() && empresa.trim().toLowerCase() !== 'não tenho' && empresa.trim().toLowerCase() !== 'nao tenho';
 
       const mensagemInicial = nomeEmpresa
         ? `Olá, ${primeiroNome}! Tudo bem?\n\nVi que você demonstrou interesse em conhecer a Ginger Fragrance Design. Fico feliz!\n\nA gente desenvolve fragrâncias estratégicas para indústrias como a ${empresa}, ajudando marcas a se diferenciarem com identidade olfativa própria.\n\nPosso entender melhor o que vocês estão buscando?`
         : `Olá, ${primeiroNome}! Tudo bem?\n\nVi que você demonstrou interesse em conhecer a Ginger Fragrance Design. Fico feliz!\n\nA gente desenvolve fragrâncias estratégicas para indústrias, ajudando marcas a se diferenciarem com identidade olfativa própria.\n\nMe conta um pouco sobre o seu projeto?`;
+
+      const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
+      const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
+
+      // ── ENVIA PRIMEIRO. Só marca como abordado se o envio confirmar.
+      // Isso evita o falso-positivo de marcar leads como "abordado" quando a Z-API está desconectada.
+      let envioConfirmado = false;
+      try {
+        const zapiResponse = await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-text`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Client-Token': process.env.ZAPI_CLIENT_TOKEN },
+          body: JSON.stringify({
+            phone: numeroLimpo,
+            message: mensagemInicial
+          })
+        });
+        const zapiResult = await zapiResponse.json();
+        envioConfirmado = envioZapiOk(zapiResponse.ok, zapiResult);
+        console.log(`Resultado envio para ${primeiroNome} (ok=${envioConfirmado}):`, JSON.stringify(zapiResult));
+      } catch(e) {
+        console.error(`Erro ao enviar para ${nome}:`, e.message);
+      }
+
+      if (!envioConfirmado) {
+        // NÃO marca, NÃO registra no Redis. O lead continua disponível para nova tentativa.
+        console.log(`⚠️ Envio NÃO confirmado para ${nome} (${numeroLimpo}). Lead NÃO marcado como abordado. Provável Z-API desconectada. Interrompendo a rodada.`);
+        // Se um envio falhou, é quase certo que a instância caiu. Para a rodada para não rodar a planilha inteira em vão.
+        break;
+      }
+
+      // Envio confirmado: agora sim marca, registra e salva a conversa.
+      await atualizarTratativa(i + 1, 'abordado pelo agente');
+      await marcarNumeroAbordado(numeroLimpo);
 
       // REDIS: salva contexto da conversa (persiste entre reinícios)
       const historico = [
@@ -528,24 +593,7 @@ async function verificarNovosLeads(manual = false) {
       await saveConversa(numeroLimpo, historico);
       await setLeadPlanilha(numeroLimpo, i + 1);
 
-      const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
-      const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
-
-      try {
-        const zapiResponse = await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-text`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Client-Token': process.env.ZAPI_CLIENT_TOKEN },
-          body: JSON.stringify({
-            phone: numeroLimpo,
-            message: mensagemInicial
-          })
-        });
-        const zapiResult = await zapiResponse.json();
-        console.log(`Mensagem enviada para ${primeiroNome}:`, JSON.stringify(zapiResult));
-        abordados++;
-      } catch(e) {
-        console.error(`Erro ao enviar para ${nome}:`, e.message);
-      }
+      abordados++;
 
       if (abordados < MAX_POR_RODADA) {
         console.log('Aguardando 60 segundos antes do próximo envio...');
@@ -677,7 +725,7 @@ app.post('/whatsapp-zapi', async (req, res) => {
 
         if (validarLead(parsed)) {
           const temClassificacao = parsed.classificacao && parsed.classificacao.trim() && parsed.classificacao.trim() !== '-';
-          
+
           if (temClassificacao) {
             leadDetectado = parsed;
             console.log('Lead VALIDADO:', parsed.nome, parsed.empresa, 'Classificação:', parsed.classificacao);
@@ -715,6 +763,13 @@ app.post('/whatsapp-zapi', async (req, res) => {
 
     const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
     const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
+
+    // ── DELAY HUMANIZADO (40s a 75s) antes de enviar a resposta.
+    // O ack 200 já foi devolvido à Z-API lá em cima, então esse delay NÃO causa
+    // reenvio de webhook nem mensagem duplicada. Mostra "digitando" no fim da espera.
+    await delayHumanizado();
+    await enviarDigitando(numero, 4000);
+    await delay(4000);
 
     const zapiResponse = await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-text`, {
       method: 'POST',

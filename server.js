@@ -77,6 +77,30 @@ async function marcarNumeroAbordado(numero) {
   await redis('SADD', 'numeros_abordados', numero);
 }
 
+// ── Teto diário de abordagens (Redis) — protege o número recém-desbloqueado.
+// Chave por dia (fuso Brasília). Expira em 48h para não acumular lixo.
+function chaveDiaBrasil() {
+  const agora = new Date();
+  const brasil = new Date(agora.getTime() + (agora.getTimezoneOffset() * 60000) + (-3 * 3600000));
+  const y = brasil.getFullYear();
+  const m = String(brasil.getMonth() + 1).padStart(2, '0');
+  const d = String(brasil.getDate()).padStart(2, '0');
+  return `abordados_dia:${y}-${m}-${d}`;
+}
+
+async function getAbordadosHoje() {
+  const v = await redis('GET', chaveDiaBrasil());
+  return v ? parseInt(v) : 0;
+}
+
+async function incrementarAbordadosHoje() {
+  const chave = chaveDiaBrasil();
+  const novo = await redis('INCR', chave);
+  // Renova expiração a cada incremento (48h)
+  await redis('EXPIRE', chave, 172800);
+  return novo ? parseInt(novo) : 0;
+}
+
 // ── Mapeamento lead → linha da planilha (Redis HASH)
 async function getLeadPlanilha(numero) {
   const result = await redis('HGET', 'leads_planilha', numero);
@@ -91,6 +115,15 @@ async function setLeadPlanilha(numero, rowIndex) {
 // ── TRAVAS DE SEGURANÇA
 // ══════════════════════════════════════════════════════════════
 let verificacaoRodando = false;
+
+// ── CONTROLE DE VOLUME (reentrada segura após bloqueio da Meta)
+// Ajuste conservador: número recém-desbloqueado precisa de ritmo humano e baixo.
+// Suba estes valores só depois de alguns dias estável, aos poucos.
+const MAX_POR_RODADA = 2;        // máximo de leads abordados por verificação
+const TETO_DIARIO = 30;          // máximo de leads abordados por dia (fuso Brasília)
+const INTERVALO_MIN_MS = 90000;  // intervalo mínimo entre envios (90s)
+const INTERVALO_MAX_MS = 180000; // intervalo máximo entre envios (180s) — aleatório entre os dois
+const INTERVALO_VERIFICACAO_MS = 30 * 60 * 1000; // verifica a planilha a cada 30 min
 
 const SYSTEM_PROMPT = `Você é o agente de atendimento da Ginger Fragrance Design, uma casa de fragrâncias estratégica brasileira, B2B, focada em transformar fragrância em ativo de negócio para indústrias de HPPC, Saneantes, Home Care e Pet Care.
 
@@ -499,12 +532,25 @@ async function verificarNovosLeads(manual = false) {
       return { status: 'planilha vazia' };
     }
 
+    // Teto diário: se já atingiu o limite do dia, não aborda mais ninguém hoje.
+    const jaHoje = await getAbordadosHoje();
+    if (jaHoje >= TETO_DIARIO) {
+      console.log(`Teto diário atingido (${jaHoje}/${TETO_DIARIO}). Nenhuma abordagem até amanhã.`);
+      verificacaoRodando = false;
+      return { status: 'teto diário atingido', abordadosHoje: jaHoje };
+    }
+
     let abordados = 0;
-    const MAX_POR_RODADA = 5;
 
     for (let i = 1; i < rows.length; i++) {
       if (abordados >= MAX_POR_RODADA) {
         console.log(`Limite de ${MAX_POR_RODADA} leads por rodada atingido`);
+        break;
+      }
+
+      // Reconfere o teto diário a cada lead (a rodada pode cruzar o limite)
+      if ((await getAbordadosHoje()) >= TETO_DIARIO) {
+        console.log(`Teto diário atingido no meio da rodada. Parando.`);
         break;
       }
 
@@ -581,6 +627,8 @@ async function verificarNovosLeads(manual = false) {
       // Envio confirmado: agora sim marca, registra e salva a conversa.
       await atualizarTratativa(i + 1, 'abordado pelo agente');
       await marcarNumeroAbordado(numeroLimpo);
+      const totalHoje = await incrementarAbordadosHoje();
+      console.log(`Abordado com sucesso. Total hoje: ${totalHoje}/${TETO_DIARIO}`);
 
       // REDIS: salva contexto da conversa (persiste entre reinícios)
       const historico = [
@@ -596,8 +644,9 @@ async function verificarNovosLeads(manual = false) {
       abordados++;
 
       if (abordados < MAX_POR_RODADA) {
-        console.log('Aguardando 60 segundos antes do próximo envio...');
-        await delay(60000);
+        const intervalo = INTERVALO_MIN_MS + Math.floor(Math.random() * (INTERVALO_MAX_MS - INTERVALO_MIN_MS));
+        console.log(`Aguardando ${(intervalo / 1000).toFixed(0)}s antes do próximo envio...`);
+        await delay(intervalo);
       }
     }
 
@@ -1001,10 +1050,10 @@ setInterval(() => {
     .catch(() => console.log('Auto-ping: falhou'));
 }, 14 * 60 * 1000);
 
-// ── VERIFICAÇÃO AUTOMÁTICA DA PLANILHA (a cada 10 minutos)
+// ── VERIFICAÇÃO AUTOMÁTICA DA PLANILHA (intervalo definido em INTERVALO_VERIFICACAO_MS)
 setInterval(() => {
   verificarNovosLeads();
-}, 10 * 60 * 1000);
+}, INTERVALO_VERIFICACAO_MS);
 
 // ── INICIAR SERVIDOR
 const PORT = process.env.PORT || 3000;

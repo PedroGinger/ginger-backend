@@ -10,7 +10,9 @@ app.use(cors({
 }));
 
 // ── GOOGLE SHEETS CONFIG
-const SPREADSHEET_ID = '1hXugFnkdT4HxZbHhZlEIoJuH7eZ3guqXjZqhwJj8VdQ';
+// ⚠️ PLANILHA NOVA (atualizada). Se o bot não ler leads, confirme que a conta de
+// serviço (client_email do GOOGLE_CREDENTIALS) está compartilhada nesta planilha como EDITOR.
+const SPREADSHEET_ID = '1xDO8V0cx474-zceEGiDLufzkdm4JjeQnmRAHbR22xv8';
 const SHEET_NAME = 'Página1';
 let sheetsClient = null;
 
@@ -63,11 +65,9 @@ async function getConversa(numero) {
 }
 
 async function saveConversa(numero, messages) {
-  // TTL de 24 horas (86400 segundos) — renova a cada interação
   await redis('SET', `conversa:${numero}`, JSON.stringify(messages), 'EX', 86400);
 }
 
-// ── Números já abordados (Redis SET — persiste entre reinícios)
 async function isNumeroAbordado(numero) {
   const result = await redis('SISMEMBER', 'numeros_abordados', numero);
   return result === 1;
@@ -77,8 +77,6 @@ async function marcarNumeroAbordado(numero) {
   await redis('SADD', 'numeros_abordados', numero);
 }
 
-// ── Teto diário de abordagens (Redis) — protege o número recém-desbloqueado.
-// Chave por dia (fuso Brasília). Expira em 48h para não acumular lixo.
 function chaveDiaBrasil() {
   const agora = new Date();
   const brasil = new Date(agora.getTime() + (agora.getTimezoneOffset() * 60000) + (-3 * 3600000));
@@ -96,12 +94,10 @@ async function getAbordadosHoje() {
 async function incrementarAbordadosHoje() {
   const chave = chaveDiaBrasil();
   const novo = await redis('INCR', chave);
-  // Renova expiração a cada incremento (48h)
   await redis('EXPIRE', chave, 172800);
   return novo ? parseInt(novo) : 0;
 }
 
-// ── Mapeamento lead → linha da planilha (Redis HASH)
 async function getLeadPlanilha(numero) {
   const result = await redis('HGET', 'leads_planilha', numero);
   return result ? parseInt(result) : null;
@@ -116,14 +112,56 @@ async function setLeadPlanilha(numero, rowIndex) {
 // ══════════════════════════════════════════════════════════════
 let verificacaoRodando = false;
 
-// ── CONTROLE DE VOLUME (reentrada segura após bloqueio da Meta)
-// Ajuste conservador: número recém-desbloqueado precisa de ritmo humano e baixo.
-// Suba estes valores só depois de alguns dias estável, aos poucos.
-const MAX_POR_RODADA = 2;        // máximo de leads abordados por verificação
-const TETO_DIARIO = 30;          // máximo de leads abordados por dia (fuso Brasília)
-const INTERVALO_MIN_MS = 90000;  // intervalo mínimo entre envios (90s)
-const INTERVALO_MAX_MS = 180000; // intervalo máximo entre envios (180s) — aleatório entre os dois
-const INTERVALO_VERIFICACAO_MS = 30 * 60 * 1000; // verifica a planilha a cada 30 min
+const MAX_POR_RODADA = 2;
+const TETO_DIARIO = 30;
+const INTERVALO_MIN_MS = 90000;
+const INTERVALO_MAX_MS = 180000;
+const INTERVALO_VERIFICACAO_MS = 30 * 60 * 1000;
+
+// ══════════════════════════════════════════════════════════════
+// ── FILTRO DE CNAE — ESQUELETO (preencher quando a lista do jurídico chegar)
+// ══════════════════════════════════════════════════════════════
+// Três faixas, conforme alinhamento interno:
+//   1) CNAEs que QUALIFICAM DIRETO (sem restrição de volume)
+//   2) CNAEs que qualificam SÓ ACIMA de um teto de volume (ex.: cervejaria só se pedido > X kg)
+//   3) CNAEs que NÃO qualificam de jeito nenhum
+//
+// Formato do CNAE: use só os dígitos, sem pontuação (ex.: '2063100').
+// Enquanto as listas estiverem vazias, o filtro fica INATIVO (não bloqueia ninguém) —
+// para não travar a operação antes da lista oficial existir.
+
+const CNAE_QUALIFICA_DIRETO = [
+  // '2063100', // ex.: fabricação de cosméticos
+];
+
+const CNAE_QUALIFICA_COM_VOLUME = {
+  // '1113501': 8,   // ex.: cervejaria só qualifica se volume desejado (kg) >= 8
+};
+
+const CNAE_NAO_QUALIFICA = [
+  // '5611201', // ex.: restaurante
+];
+
+// Retorna: { status: 'direto' | 'com_volume' | 'bloqueado' | 'sem_lista' | 'sem_cnae', volumeMinimo?: number }
+// Não faz consulta externa aqui — apenas classifica o CNAE já conhecido do lead.
+function avaliarCnae(cnae) {
+  const listasVazias =
+    CNAE_QUALIFICA_DIRETO.length === 0 &&
+    Object.keys(CNAE_QUALIFICA_COM_VOLUME).length === 0 &&
+    CNAE_NAO_QUALIFICA.length === 0;
+  if (listasVazias) return { status: 'sem_lista' };
+
+  if (!cnae) return { status: 'sem_cnae' };
+  const c = String(cnae).replace(/\D/g, '');
+
+  if (CNAE_NAO_QUALIFICA.includes(c)) return { status: 'bloqueado' };
+  if (CNAE_QUALIFICA_DIRETO.includes(c)) return { status: 'direto' };
+  if (Object.prototype.hasOwnProperty.call(CNAE_QUALIFICA_COM_VOLUME, c)) {
+    return { status: 'com_volume', volumeMinimo: CNAE_QUALIFICA_COM_VOLUME[c] };
+  }
+  // CNAE não está em nenhuma lista: por segurança, trata como sem_cnae (não bloqueia, mas não libera direto)
+  return { status: 'sem_cnae' };
+}
 
 const SYSTEM_PROMPT = `Você é o agente de atendimento da Ginger Fragrance Design, uma casa de fragrâncias estratégica brasileira, B2B, focada em transformar fragrância em ativo de negócio para indústrias de HPPC, Saneantes, Home Care e Pet Care.
 
@@ -322,7 +360,6 @@ Somente classifique como RUIM após confirmar que não há interesse real, empre
 DADOS INTERNOS — NÃO COMPARTILHAR COM O LEAD
 Especialistas comerciais: Juliana Cardoso (juliana.cardoso@ginger.ind.br) e Jennifer Santos (jennifer.santos@ginger.ind.br)
 Email remetente do sistema: lead@ginger.ind.br
-WhatsApp do agente: +55 19 98354-0110
 
 ⚠️ QUANDO GERAR O BLOCO DE DADOS — REGRA CRÍTICA ⚠️
 NÃO gere o bloco %%%LEAD_DATA%%% apenas porque tem nome, empresa e contato. O bloco só deve ser gerado quando a conversa chegou a um ponto de CONCLUSÃO, ou seja:
@@ -362,7 +399,6 @@ Antes de escrever %%%LEAD_DATA%%%, verifique:
 3. O campo "empresa" está preenchido? Se não, NÃO gere o bloco.
 Se qualquer uma dessas validações falhar, continue a conversa e colete a informação faltante. NUNCA gere o bloco incompleto.`;
 
-// ── FUNÇÃO: VALIDAR LEAD ANTES DE ENVIAR EMAIL
 function validarLead(parsed) {
   if (!parsed.nome || !parsed.nome.trim()) return false;
   if (!parsed.empresa || !parsed.empresa.trim()) return false;
@@ -372,7 +408,6 @@ function validarLead(parsed) {
   return true;
 }
 
-// ── FUNÇÃO: LIMPAR NÚMERO DE TELEFONE
 function limparTelefone(tel) {
   if (!tel) return null;
   let limpo = tel.replace(/\D/g, '');
@@ -382,7 +417,6 @@ function limparTelefone(tel) {
   return limpo;
 }
 
-// ── FUNÇÃO: VERIFICAR SE É HORÁRIO COMERCIAL (8h-20h, todos os dias, horário de Brasília)
 function isHorarioComercial() {
   const agora = new Date();
   const brasilOffset = -3;
@@ -393,7 +427,6 @@ function isHorarioComercial() {
   return true;
 }
 
-// ── FUNÇÃO: VERIFICAR SE DATA É RECENTE (últimas 24 horas)
 function isLeadRecente(dataStr) {
   try {
     const partes = dataStr.split(' ');
@@ -420,20 +453,18 @@ function isLeadRecente(dataStr) {
   }
 }
 
-// ── FUNÇÃO: DELAY REAL ENTRE MENSAGENS
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ── FUNÇÃO: DELAY HUMANIZADO PARA RESPOSTA DO AGENTE (40s a 75s, aleatório)
-// Evita o padrão de robô (resposta instantânea) e reduz risco de bloqueio pela Meta.
+// ── DELAY HUMANIZADO PARA RESPOSTA DO AGENTE (20s a 45s, aleatório)
+// Evita o padrão de robô (resposta instantânea) e reduz risco de bloqueio.
 function delayHumanizado() {
-  const ms = 40000 + Math.floor(Math.random() * 35000); // 40000 a 75000 ms
+  const ms = 20000 + Math.floor(Math.random() * 25000); // 20000 a 45000 ms
   console.log(`Delay humanizado antes de responder: ${(ms / 1000).toFixed(0)}s`);
   return delay(ms);
 }
 
-// ── FUNÇÃO: ENVIAR STATUS "DIGITANDO" PELA Z-API (opcional, falha silenciosa)
 async function enviarDigitando(numero, durationMs = 5000) {
   const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
   const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
@@ -444,19 +475,17 @@ async function enviarDigitando(numero, durationMs = 5000) {
       body: JSON.stringify({ phone: numero, chatState: 'composing', duration: Math.round(durationMs / 1000) })
     });
   } catch(e) {
-    // Não afeta o envio da mensagem. Se a Z-API não suportar este endpoint, apenas ignora.
     console.log('Aviso: não foi possível enviar status digitando:', e.message);
   }
 }
 
-// ── FUNÇÃO: BUSCAR LINHA DO LEAD NA PLANILHA PELO TELEFONE
 async function buscarLinhaPorTelefone(numero) {
   try {
     const sheets = await getSheetsClient();
     if (!sheets) return null;
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A:I`
+      range: `${SHEET_NAME}!A:J`
     });
     const rows = res.data.values;
     if (!rows) return null;
@@ -471,7 +500,6 @@ async function buscarLinhaPorTelefone(numero) {
   }
 }
 
-// ── FUNÇÃO: ATUALIZAR COLUNA TRATATIVA NA PLANILHA
 async function atualizarTratativa(rowIndex, valor) {
   try {
     const sheets = await getSheetsClient();
@@ -482,14 +510,30 @@ async function atualizarTratativa(rowIndex, valor) {
       valueInputOption: 'RAW',
       requestBody: { values: [[valor]] }
     });
-    console.log(`Planilha atualizada: linha ${rowIndex} = "${valor}"`);
+    console.log(`Planilha atualizada (tratativa): linha ${rowIndex} = "${valor}"`);
   } catch(e) {
-    console.error('Erro ao atualizar planilha:', e.message);
+    console.error('Erro ao atualizar tratativa:', e.message);
   }
 }
 
-// ── FUNÇÃO: VERIFICAR SE ENVIO DA Z-API FOI BEM-SUCEDIDO
-// Z-API retorna messageId/zaapId/id em envio OK. Instância desconectada retorna erro / sem id.
+// ── NOVO: carimbo de ORIGEM na coluna J
+// Valores usados: 'bot-planilha' (abordagem ativa) e 'bot-site' (chat do site / WhatsApp).
+async function atualizarOrigem(rowIndex, origem) {
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!J${rowIndex}`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [[origem]] }
+    });
+    console.log(`Planilha atualizada (origem): linha ${rowIndex} = "${origem}"`);
+  } catch(e) {
+    console.error('Erro ao atualizar origem:', e.message);
+  }
+}
+
 function envioZapiOk(httpOk, zapiResult) {
   if (!httpOk) return false;
   if (!zapiResult || typeof zapiResult !== 'object') return false;
@@ -497,7 +541,6 @@ function envioZapiOk(httpOk, zapiResult) {
   return Boolean(zapiResult.messageId || zapiResult.zaapId || zapiResult.id);
 }
 
-// ── FUNÇÃO: VERIFICAR NOVOS LEADS NA PLANILHA E ABORDAR
 async function verificarNovosLeads(manual = false) {
   if (verificacaoRodando) {
     console.log('Verificação já em andamento, pulando');
@@ -522,7 +565,7 @@ async function verificarNovosLeads(manual = false) {
 
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A:I`
+      range: `${SHEET_NAME}!A:J`
     });
 
     const rows = res.data.values;
@@ -532,7 +575,6 @@ async function verificarNovosLeads(manual = false) {
       return { status: 'planilha vazia' };
     }
 
-    // Teto diário: se já atingiu o limite do dia, não aborda mais ninguém hoje.
     const jaHoje = await getAbordadosHoje();
     if (jaHoje >= TETO_DIARIO) {
       console.log(`Teto diário atingido (${jaHoje}/${TETO_DIARIO}). Nenhuma abordagem até amanhã.`);
@@ -548,7 +590,6 @@ async function verificarNovosLeads(manual = false) {
         break;
       }
 
-      // Reconfere o teto diário a cada lead (a rodada pode cruzar o limite)
       if ((await getAbordadosHoje()) >= TETO_DIARIO) {
         console.log(`Teto diário atingido no meio da rodada. Parando.`);
         break;
@@ -578,7 +619,6 @@ async function verificarNovosLeads(manual = false) {
 
       if (!nome.trim()) continue;
 
-      // REDIS: verifica se número já foi abordado (persiste entre reinícios)
       const jaAbordado = await isNumeroAbordado(numeroLimpo);
       if (jaAbordado) {
         console.log(`Linha ${i + 1}: ${nome} (${numeroLimpo}) já foi abordado antes, pulando`);
@@ -598,8 +638,6 @@ async function verificarNovosLeads(manual = false) {
       const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
       const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
 
-      // ── ENVIA PRIMEIRO. Só marca como abordado se o envio confirmar.
-      // Isso evita o falso-positivo de marcar leads como "abordado" quando a Z-API está desconectada.
       let envioConfirmado = false;
       try {
         const zapiResponse = await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-text`, {
@@ -618,19 +656,17 @@ async function verificarNovosLeads(manual = false) {
       }
 
       if (!envioConfirmado) {
-        // NÃO marca, NÃO registra no Redis. O lead continua disponível para nova tentativa.
         console.log(`⚠️ Envio NÃO confirmado para ${nome} (${numeroLimpo}). Lead NÃO marcado como abordado. Provável Z-API desconectada. Interrompendo a rodada.`);
-        // Se um envio falhou, é quase certo que a instância caiu. Para a rodada para não rodar a planilha inteira em vão.
         break;
       }
 
-      // Envio confirmado: agora sim marca, registra e salva a conversa.
+      // Envio confirmado: marca tratativa, carimba origem, registra e salva a conversa.
       await atualizarTratativa(i + 1, 'abordado pelo agente');
+      await atualizarOrigem(i + 1, 'bot-planilha'); // ← carimbo de origem
       await marcarNumeroAbordado(numeroLimpo);
       const totalHoje = await incrementarAbordadosHoje();
       console.log(`Abordado com sucesso. Total hoje: ${totalHoje}/${TETO_DIARIO}`);
 
-      // REDIS: salva contexto da conversa (persiste entre reinícios)
       const historico = [
         {
           role: 'user',
@@ -706,7 +742,7 @@ app.post('/whatsapp-zapi', async (req, res) => {
 
     if (!numero || !mensagem || typeof mensagem !== 'string' || !mensagem.trim()) {
       if (numero && !mensagem && (body.audio || body.image || body.video || body.document || body.sticker)) {
-        console.log('Mídia recebida de:', numero, 'Tipo:', body.audio ? 'audio' : body.image ? 'imagem' : body.video ? 'video' : body.document ? 'documento' : 'sticker');
+        console.log('Mídia recebida de:', numero);
         const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
         const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
         try {
@@ -729,12 +765,8 @@ app.post('/whatsapp-zapi', async (req, res) => {
 
     console.log('Processando mensagem de:', numero, 'Texto:', mensagem.substring(0, 100));
 
-    // REDIS: carrega histórico persistido (sobrevive a reinícios)
     let historico = await getConversa(numero) || [];
-
     historico.push({ role: 'user', content: mensagem });
-
-    // Limita a 20 mensagens
     if (historico.length > 20) {
       historico = historico.slice(-20);
     }
@@ -779,7 +811,6 @@ app.post('/whatsapp-zapi', async (req, res) => {
             leadDetectado = parsed;
             console.log('Lead VALIDADO:', parsed.nome, parsed.empresa, 'Classificação:', parsed.classificacao);
 
-            // REDIS: busca linha da planilha
             let rowIndex = await getLeadPlanilha(numero);
             if (!rowIndex) {
               rowIndex = await buscarLinhaPorTelefone(numero);
@@ -790,9 +821,10 @@ app.post('/whatsapp-zapi', async (req, res) => {
             }
             if (rowIndex) {
               await atualizarTratativa(rowIndex, parsed.classificacao);
+              await atualizarOrigem(rowIndex, 'bot-site'); // ← carimbo de origem (chat)
             }
           } else {
-            console.log('Lead com dados mas SEM classificação, aguardando conclusão da conversa:', parsed.nome);
+            console.log('Lead com dados mas SEM classificação, aguardando conclusão:', parsed.nome);
           }
         } else {
           console.log('Lead BLOQUEADO (dados incompletos):', JSON.stringify(parsed));
@@ -804,18 +836,13 @@ app.post('/whatsapp-zapi', async (req, res) => {
 
     const resposta = raw.replace(regex, '').trim();
 
-    // Salva a resposta do assistente no histórico
     historico.push({ role: 'assistant', content: raw });
-
-    // REDIS: salva histórico atualizado (persiste entre reinícios)
     await saveConversa(numero, historico);
 
     const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
     const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
 
-    // ── DELAY HUMANIZADO (40s a 75s) antes de enviar a resposta.
-    // O ack 200 já foi devolvido à Z-API lá em cima, então esse delay NÃO causa
-    // reenvio de webhook nem mensagem duplicada. Mostra "digitando" no fim da espera.
+    // ── DELAY HUMANIZADO (20s a 45s) + "digitando" antes de enviar.
     await delayHumanizado();
     await enviarDigitando(numero, 4000);
     await delay(4000);
@@ -840,97 +867,7 @@ app.post('/whatsapp-zapi', async (req, res) => {
   }
 });
 
-// ── ROTA: WHATSAPP LEGADO
-app.post('/whatsapp', async (req, res) => {
-  const { numero, mensagem } = req.body;
-
-  // REDIS: carrega histórico persistido
-  let historico = await getConversa(numero);
-
-  if (!historico) {
-    historico = [];
-    historico.push({
-      role: 'assistant',
-      content: 'Olá! Tudo bem?\n\nSou da equipe Ginger. Pode falar à vontade, seja sobre um produto que você quer lançar, uma linha que precisa de ajuste, ou só uma dúvida sobre como a gente trabalha.\n\nO que te trouxe até aqui?'
-    });
-  }
-
-  historico.push({ role: 'user', content: mensagem });
-  if (historico.length > 20) {
-    historico = historico.slice(-20);
-  }
-
-  try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1000,
-        system: SYSTEM_PROMPT,
-        messages: historico
-      })
-    });
-
-    const data = await response.json();
-    if (!data.content) console.log('CLAUDE ERRO /whatsapp:', JSON.stringify(data).substring(0, 800));
-    const raw = data.content?.[0]?.text || 'Não consegui processar. Pode repetir?';
-
-    const regex = /%%%LEAD_DATA%%%([\s\S]*?)%%%END_LEAD_DATA%%%/;
-    const match = raw.match(regex);
-    let leadDetectado = null;
-
-    if (match) {
-      try {
-        const parsed = JSON.parse(match[1].trim());
-        if (validarLead(parsed)) {
-          leadDetectado = parsed;
-        }
-      } catch(e) {}
-    }
-
-    const resposta = raw.replace(regex, '').trim();
-    historico.push({ role: 'assistant', content: raw });
-
-    // REDIS: salva histórico atualizado
-    await saveConversa(numero, historico);
-
-    if (leadDetectado) {
-      await enviarEmailLead(leadDetectado, numero);
-    }
-
-    res.json({ resposta });
-  } catch(error) {
-    res.status(500).json({ resposta: 'Erro interno. Tente novamente.' });
-  }
-});
-
-// ── ROTA: ABORDAGEM PROATIVA MANUAL
-app.post('/abordar', async (req, res) => {
-  const { numero, nome, empresa, cidade, faturamento } = req.body;
-  const primeiroNome = nome.split(' ')[0];
-
-  const mensagemInicial = `Olá, ${primeiroNome}! Tudo bem?\n\nVi que você demonstrou interesse em conhecer melhor a Ginger. Fico feliz em ter você aqui.\n\nSou da equipe Ginger Fragrance Design. A gente desenvolve fragrâncias estratégicas para indústrias como a ${empresa}, ajudando marcas a se diferenciarem com identidade olfativa própria.\n\nPosso entender melhor o que vocês estão buscando?`;
-
-  const historico = [
-    {
-      role: 'user',
-      content: `[CONTEXTO INTERNO — não mencionar ao lead]\nLead qualificado da landing page:\nNome: ${nome}\nEmpresa: ${empresa}\nCidade: ${cidade}\nFaturamento: ${faturamento}\n\nUse essas informações para personalizar a conversa. Já enviamos a mensagem de abertura abaixo. Aguarde a resposta do lead para continuar.`
-    },
-    { role: 'assistant', content: mensagemInicial }
-  ];
-
-  // REDIS: salva histórico
-  await saveConversa(numero, historico);
-
-  res.json({ numero, mensagem: mensagemInicial });
-});
-
-// ── ROTA: VERIFICAÇÃO MANUAL DA PLANILHA (funciona qualquer horário)
+// ── ROTA: VERIFICAÇÃO MANUAL DA PLANILHA
 app.get('/verificar-leads', async (req, res) => {
   const resultado = await verificarNovosLeads(true);
   res.json(resultado);
@@ -985,6 +922,21 @@ app.get('/claude-test', async (req, res) => {
   } catch(e) {
     console.error('CLAUDE TEST erro:', e.message);
     res.status(500).json({ erro: e.message });
+  }
+});
+
+// ── ROTA: TESTAR ACESSO À PLANILHA (debug) — útil para confirmar o compartilhamento
+app.get('/sheet-test', async (req, res) => {
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return res.status(500).json({ status: 'sem cliente sheets' });
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!A1:J1`
+    });
+    res.json({ status: 'planilha acessível', cabecalho: r.data.values ? r.data.values[0] : [] });
+  } catch(e) {
+    res.status(500).json({ status: 'ERRO ao acessar planilha', erro: e.message, dica: 'Confirme que a conta de serviço (client_email) está compartilhada como Editor nesta planilha.' });
   }
 });
 
@@ -1050,7 +1002,7 @@ setInterval(() => {
     .catch(() => console.log('Auto-ping: falhou'));
 }, 14 * 60 * 1000);
 
-// ── VERIFICAÇÃO AUTOMÁTICA DA PLANILHA (intervalo definido em INTERVALO_VERIFICACAO_MS)
+// ── VERIFICAÇÃO AUTOMÁTICA DA PLANILHA
 setInterval(() => {
   verificarNovosLeads();
 }, INTERVALO_VERIFICACAO_MS);
@@ -1059,14 +1011,13 @@ setInterval(() => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`Servidor Ginger rodando na porta ${PORT}`);
+  console.log('Planilha:', SPREADSHEET_ID);
   console.log('Redis Upstash: ' + (REDIS_URL ? 'CONFIGURADO' : 'NÃO CONFIGURADO'));
-  console.log('Histórico de conversas: PERSISTIDO NO REDIS');
-  console.log('Verificação automática: a cada 10 minutos, apenas em horário comercial');
-  console.log('Verificação manual: GET /verificar-leads');
+  console.log('Delay humanizado: 20s a 45s');
+  console.log('Teste planilha: GET /sheet-test');
   console.log('Teste Redis: GET /redis-test');
   console.log('Teste Claude: GET /claude-test');
 
-  // Testa conexão Redis no boot
   if (REDIS_URL) {
     const teste = await redis('PING');
     console.log('Redis PING:', teste === 'PONG' ? 'CONECTADO' : 'FALHOU');

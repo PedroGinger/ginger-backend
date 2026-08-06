@@ -9,9 +9,35 @@ app.use(cors({
   origin: ['https://ginger.ind.br', 'https://www.ginger.ind.br']
 }));
 
+// ══════════════════════════════════════════════════════════════
+// ── WHATSAPP CLOUD API (META) — substitui a Z-API
+// ══════════════════════════════════════════════════════════════
+// Variáveis necessárias no Render:
+//   WHATSAPP_TOKEN            → token permanente do system user "Ginger-Bot"
+//   WHATSAPP_PHONE_NUMBER_ID  → 1175277422346620
+//   WHATSAPP_VERIFY_TOKEN     → string livre, inventada por você, usada só na
+//                               validação do webhook no painel da Meta
+const GRAPH_VERSION = 'v21.0';
+const WA_TOKEN = process.env.WHATSAPP_TOKEN;
+const WA_PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+const WA_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
+
+// Template aprovado para abordagem ativa (lead frio, fora da janela de 24h)
+const TEMPLATE_ABORDAGEM = 'abordagem_lead_ginger';
+const TEMPLATE_IDIOMA = 'pt_BR';
+
+function urlMensagens() {
+  return `https://graph.facebook.com/${GRAPH_VERSION}/${WA_PHONE_ID}/messages`;
+}
+
+function headersWa() {
+  return {
+    'Authorization': `Bearer ${WA_TOKEN}`,
+    'Content-Type': 'application/json'
+  };
+}
+
 // ── GOOGLE SHEETS CONFIG
-// ⚠️ PLANILHA NOVA (atualizada). Se o bot não ler leads, confirme que a conta de
-// serviço (client_email do GOOGLE_CREDENTIALS) está compartilhada nesta planilha como EDITOR.
 const SPREADSHEET_ID = '1xDO8V0cx474-zceEGiDLufzkdm4JjeQnmRAHbR22xv8';
 const SHEET_NAME = 'Página1';
 let sheetsClient = null;
@@ -57,24 +83,57 @@ async function redis(...args) {
   }
 }
 
+// ══════════════════════════════════════════════════════════════
+// ── NORMALIZAÇÃO DE NÚMERO — CRÍTICO NA CLOUD API
+// ══════════════════════════════════════════════════════════════
+// A Meta devolve o wa_id de celulares brasileiros MUITAS VEZES sem o nono
+// dígito (ex.: 551998354011 em vez de 5519998354011). Se a gente usar o número
+// cru como chave, a conversa de saída e a de entrada viram duas conversas
+// diferentes e o bot perde o histórico.
+// Solução: uma chave canônica que SEMPRE remove o nono dígito.
+// Usada só internamente (Redis e busca na planilha). Para ENVIAR, usamos
+// o wa_id exato que a Meta mandou, ou o número completo da planilha.
+function chaveNumero(numero) {
+  if (!numero) return null;
+  let n = String(numero).replace(/\D/g, '');
+  if (n.startsWith('0')) n = n.substring(1);
+  if (!n.startsWith('55')) n = '55' + n;
+  const resto = n.slice(2);
+  const ddd = resto.slice(0, 2);
+  let assinante = resto.slice(2);
+  if (assinante.length === 9 && assinante.startsWith('9')) {
+    assinante = assinante.slice(1);
+  }
+  return '55' + ddd + assinante;
+}
+
 // ── Histórico de conversas (Redis)
 async function getConversa(numero) {
-  const data = await redis('GET', `conversa:${numero}`);
+  const data = await redis('GET', `conversa:${chaveNumero(numero)}`);
   if (!data) return null;
   try { return JSON.parse(data); } catch (e) { return null; }
 }
 
 async function saveConversa(numero, messages) {
-  await redis('SET', `conversa:${numero}`, JSON.stringify(messages), 'EX', 86400);
+  await redis('SET', `conversa:${chaveNumero(numero)}`, JSON.stringify(messages), 'EX', 86400);
 }
 
 async function isNumeroAbordado(numero) {
-  const result = await redis('SISMEMBER', 'numeros_abordados', numero);
+  const result = await redis('SISMEMBER', 'numeros_abordados', chaveNumero(numero));
   return result === 1;
 }
 
 async function marcarNumeroAbordado(numero) {
-  await redis('SADD', 'numeros_abordados', numero);
+  await redis('SADD', 'numeros_abordados', chaveNumero(numero));
+}
+
+// ── Deduplicação de webhook. A Meta reenvia o mesmo evento se não receber 200
+// rápido, e como o bot tem delay antes de responder, sem isso o lead recebe
+// resposta duplicada.
+async function jaProcessouMensagem(msgId) {
+  if (!msgId) return false;
+  const r = await redis('SET', `msg:${msgId}`, '1', 'NX', 'EX', 3600);
+  return r !== 'OK';
 }
 
 function chaveDiaBrasil() {
@@ -99,12 +158,12 @@ async function incrementarAbordadosHoje() {
 }
 
 async function getLeadPlanilha(numero) {
-  const result = await redis('HGET', 'leads_planilha', numero);
+  const result = await redis('HGET', 'leads_planilha', chaveNumero(numero));
   return result ? parseInt(result) : null;
 }
 
 async function setLeadPlanilha(numero, rowIndex) {
-  await redis('HSET', 'leads_planilha', numero, rowIndex.toString());
+  await redis('HSET', 'leads_planilha', chaveNumero(numero), rowIndex.toString());
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -113,23 +172,23 @@ async function setLeadPlanilha(numero, rowIndex) {
 let verificacaoRodando = false;
 
 const MAX_POR_RODADA = 2;
+// Na Cloud API oficial o limite inicial da Meta é de 250 clientes únicos por
+// 24h e sobe conforme a qualidade do número. Mantido conservador no início.
+// Pode subir depois que o número tiver histórico bom.
 const TETO_DIARIO = 30;
 const INTERVALO_MIN_MS = 90000;
 const INTERVALO_MAX_MS = 180000;
 const INTERVALO_VERIFICACAO_MS = 30 * 60 * 1000;
 
+// Delay antes de responder. Na Z-API isso era proteção contra banimento.
+// Na API oficial não há esse risco, então foi reduzido para não deixar o lead
+// esperando. Ajuste aqui se quiser voltar ao ritmo antigo (20000 / 45000).
+const RESPOSTA_DELAY_MIN_MS = 8000;
+const RESPOSTA_DELAY_MAX_MS = 18000;
+
 // ══════════════════════════════════════════════════════════════
 // ── FILTRO DE CNAE — ESQUELETO (preencher quando a lista do jurídico chegar)
 // ══════════════════════════════════════════════════════════════
-// Três faixas, conforme alinhamento interno:
-//   1) CNAEs que QUALIFICAM DIRETO (sem restrição de volume)
-//   2) CNAEs que qualificam SÓ ACIMA de um teto de volume (ex.: cervejaria só se pedido > X kg)
-//   3) CNAEs que NÃO qualificam de jeito nenhum
-//
-// Formato do CNAE: use só os dígitos, sem pontuação (ex.: '2063100').
-// Enquanto as listas estiverem vazias, o filtro fica INATIVO (não bloqueia ninguém) —
-// para não travar a operação antes da lista oficial existir.
-
 const CNAE_QUALIFICA_DIRETO = [
   // '2063100', // ex.: fabricação de cosméticos
 ];
@@ -142,8 +201,6 @@ const CNAE_NAO_QUALIFICA = [
   // '5611201', // ex.: restaurante
 ];
 
-// Retorna: { status: 'direto' | 'com_volume' | 'bloqueado' | 'sem_lista' | 'sem_cnae', volumeMinimo?: number }
-// Não faz consulta externa aqui — apenas classifica o CNAE já conhecido do lead.
 function avaliarCnae(cnae) {
   const listasVazias =
     CNAE_QUALIFICA_DIRETO.length === 0 &&
@@ -159,7 +216,6 @@ function avaliarCnae(cnae) {
   if (Object.prototype.hasOwnProperty.call(CNAE_QUALIFICA_COM_VOLUME, c)) {
     return { status: 'com_volume', volumeMinimo: CNAE_QUALIFICA_COM_VOLUME[c] };
   }
-  // CNAE não está em nenhuma lista: por segurança, trata como sem_cnae (não bloqueia, mas não libera direto)
   return { status: 'sem_cnae' };
 }
 
@@ -244,7 +300,10 @@ NUNCA se referir a si mesmo como "agente", "bot", "assistente virtual", "atenden
 SEMPRE manter cordialidade e educação, independente do tom do interlocutor. Se o contato for grosseiro, agressivo ou mal educado, o agente nunca rebate, nunca eleva o tom e nunca demonstra irritação. Responde com calma, respeito e gentileza, redirecionando a conversa de forma natural. A Ginger nunca perde a compostura, em nenhuma circunstância.
 NUNCA revelar informações sigilosas ou internas da Ginger, incluindo faturamento, margens, políticas internas, nomes de fornecedores, fórmulas, estrutura de custos, dados de clientes, salários ou qualquer informação estratégica confidencial. Se pressionado, responder com cordialidade que essas informações são restritas e não podem ser compartilhadas.
 LIMITAÇÃO TÉCNICA: Você só consegue ler mensagens de texto. NÃO consegue ouvir áudios, ver imagens, abrir documentos, links ou qualquer outro tipo de mídia. Se o contato perguntar se pode mandar áudio, imagem ou arquivo, responda com educação que no momento só consegue receber mensagens de texto, e peça para digitar. NUNCA diga que consegue processar áudio, imagem ou vídeo.
-Em algum momento natural da conversa, especialmente com clientes menores ou que demonstrem insegurança sobre volume, transmita de forma sucinta que na Ginger cada kg importa. Não use essa frase literalmente, mas transmita essa essência, que a Ginger se dedica ao projeto do cliente independente do tamanho do pedido. Nunca force esse momento, ele deve surgir naturalmente no contexto da conversa.
+Em algum momento natural da conversa, especialmente com clientes menores ou que demonstrem insegurança sobre volume, transmita de forma sucinta que na Ginger cada kg importa. Não use essa frase literalmente, mas transmita essa ideia, que a Ginger se dedica ao projeto do cliente independente do tamanho do pedido. Nunca force esse momento, ele deve surgir naturalmente no contexto da conversa.
+
+DESCADASTRO
+Se o contato escrever SAIR, PARAR, DESCADASTRAR ou pedir para não receber mais mensagens, responder de forma curta e cordial confirmando que não haverá mais contato, e encerrar. Não tentar reverter, não argumentar, não fazer nenhuma pergunta. Exemplo: "Sem problema, não vamos mais entrar em contato. Obrigado pelo retorno e sucesso no seu projeto!"
 
 COLETA DE INFORMAÇÕES DO LEAD
 Ao longo da conversa, colete de forma natural e progressiva, sem parecer um formulário:
@@ -306,18 +365,20 @@ REVENDAS PARCEIRAS DA GINGER
 Quando classificar como POTENCIAL_FUTURO, direcionar para as revendas conforme o estado do contato:
 
 Estado de São Paulo:
-- Paris Essências (loja física e online), fracionado de 1kg e 100ml
-- Marco Aurelio (loja física), fracionado de 1kg
-- Wanny (loja física e online), fracionado de 1kg e 100ml
-- Paraiso das Essências (loja física e online), fracionado de 1kg
+- Paris Essências (loja física e online), fracionado de 100ml e 1kg
+- Marco Aurélio (loja física), fracionado de 100ml e 1kg
+- Wanny (loja física e online), fracionado de 100ml e 1kg
+- Paraíso das Essências (loja física e online), fracionado de 1kg
+- Flower (loja física e online), fracionado de 1kg
+- Maspa Nova Essência (loja física e online), fracionado de 100ml, 500ml e 1kg
 
 Estado de Pernambuco:
 - La Bela Essenza (loja física), fracionado de 1kg
 
 Estado do Amazonas:
-- Aromas do Norte (loja física), fracionado de 100ml
+- Aromas do Norte (loja física e online), fracionado de 100ml
 
-Se o contato não informar o estado, mencionar as revendas online disponíveis (Paris Essências e Wanny).
+Se o contato não informar o estado, mencionar as revendas com venda online (Paris Essências, Wanny, Paraíso das Essências, Flower, Maspa Nova Essência e Aromas do Norte). Nunca cite mais de três revendas na mesma mensagem, escolha as mais adequadas ao volume que o contato precisa.
 
 COMPORTAMENTO COM LEAD POTENCIAL FUTURO
 Ao identificar como POTENCIAL_FUTURO, encerrar de forma gentil e direcionar para as revendas:
@@ -457,25 +518,103 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ── DELAY HUMANIZADO PARA RESPOSTA DO AGENTE (20s a 45s, aleatório)
-// Evita o padrão de robô (resposta instantânea) e reduz risco de bloqueio.
 function delayHumanizado() {
-  const ms = 20000 + Math.floor(Math.random() * 25000); // 20000 a 45000 ms
-  console.log(`Delay humanizado antes de responder: ${(ms / 1000).toFixed(0)}s`);
+  const faixa = RESPOSTA_DELAY_MAX_MS - RESPOSTA_DELAY_MIN_MS;
+  const ms = RESPOSTA_DELAY_MIN_MS + Math.floor(Math.random() * faixa);
+  console.log(`Delay antes de responder: ${(ms / 1000).toFixed(0)}s`);
   return delay(ms);
 }
 
-async function enviarDigitando(numero, durationMs = 5000) {
-  const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
-  const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
+// ══════════════════════════════════════════════════════════════
+// ── ENVIO PELA CLOUD API
+// ══════════════════════════════════════════════════════════════
+
+// Texto livre. Só funciona dentro da janela de 24h aberta por uma mensagem
+// do lead. Fora dela a Meta rejeita com o erro 131047.
+async function enviarTexto(numero, texto) {
   try {
-    await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-chat-state`, {
+    const r = await fetch(urlMensagens(), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Client-Token': process.env.ZAPI_CLIENT_TOKEN },
-      body: JSON.stringify({ phone: numero, chatState: 'composing', duration: Math.round(durationMs / 1000) })
+      headers: headersWa(),
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: numero,
+        type: 'text',
+        text: { preview_url: false, body: texto }
+      })
+    });
+    const data = await r.json();
+    if (!r.ok || data.error) {
+      const codigo = data.error?.code;
+      if (codigo === 131047) {
+        console.error(`Janela de 24h fechada para ${numero}. Só é possível reabrir com template.`);
+      } else {
+        console.error('Erro ao enviar texto:', JSON.stringify(data).substring(0, 500));
+      }
+      return { ok: false, data };
+    }
+    return { ok: true, data, id: data.messages?.[0]?.id };
+  } catch(e) {
+    console.error('Falha de rede ao enviar texto:', e.message);
+    return { ok: false, erro: e.message };
+  }
+}
+
+// Template de abordagem ativa. É o único caminho permitido para iniciar
+// conversa com quem não falou com a gente nas últimas 24h.
+async function enviarTemplateAbordagem(numero, primeiroNome, nomeEmpresa) {
+  try {
+    const r = await fetch(urlMensagens(), {
+      method: 'POST',
+      headers: headersWa(),
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: numero,
+        type: 'template',
+        template: {
+          name: TEMPLATE_ABORDAGEM,
+          language: { code: TEMPLATE_IDIOMA },
+          components: [{
+            type: 'body',
+            parameters: [
+              { type: 'text', text: primeiroNome },
+              { type: 'text', text: nomeEmpresa }
+            ]
+          }]
+        }
+      })
+    });
+    const data = await r.json();
+    if (!r.ok || data.error) {
+      console.error('Erro ao enviar template:', JSON.stringify(data).substring(0, 500));
+      return { ok: false, data };
+    }
+    return { ok: true, data, id: data.messages?.[0]?.id };
+  } catch(e) {
+    console.error('Falha de rede ao enviar template:', e.message);
+    return { ok: false, erro: e.message };
+  }
+}
+
+// Marca a mensagem como lida e mostra "digitando". Se a conta não suportar o
+// indicador de digitação, o marcar como lida continua funcionando.
+async function marcarLidoEDigitando(messageId) {
+  if (!messageId) return;
+  try {
+    await fetch(urlMensagens(), {
+      method: 'POST',
+      headers: headersWa(),
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: messageId,
+        typing_indicator: { type: 'text' }
+      })
     });
   } catch(e) {
-    console.log('Aviso: não foi possível enviar status digitando:', e.message);
+    console.log('Aviso: não foi possível marcar como lido ou digitando:', e.message);
   }
 }
 
@@ -489,9 +628,10 @@ async function buscarLinhaPorTelefone(numero) {
     });
     const rows = res.data.values;
     if (!rows) return null;
+    const alvo = chaveNumero(numero);
     for (let i = 1; i < rows.length; i++) {
-      const telPlanilha = limparTelefone(rows[i][3] || '');
-      if (telPlanilha === numero) return i + 1;
+      const telPlanilha = chaveNumero(rows[i][3] || '');
+      if (telPlanilha && telPlanilha === alvo) return i + 1;
     }
     return null;
   } catch(e) {
@@ -516,8 +656,8 @@ async function atualizarTratativa(rowIndex, valor) {
   }
 }
 
-// ── NOVO: carimbo de ORIGEM na coluna J
-// Valores usados: 'bot-planilha' (abordagem ativa) e 'bot-site' (chat do site / WhatsApp).
+// Carimbo de ORIGEM na coluna J.
+// 'bot-planilha' = abordagem ativa. 'bot-site' = chat do site ou WhatsApp receptivo.
 async function atualizarOrigem(rowIndex, origem) {
   try {
     const sheets = await getSheetsClient();
@@ -534,13 +674,9 @@ async function atualizarOrigem(rowIndex, origem) {
   }
 }
 
-function envioZapiOk(httpOk, zapiResult) {
-  if (!httpOk) return false;
-  if (!zapiResult || typeof zapiResult !== 'object') return false;
-  if (zapiResult.error) return false;
-  return Boolean(zapiResult.messageId || zapiResult.zaapId || zapiResult.id);
-}
-
+// ══════════════════════════════════════════════════════════════
+// ── ABORDAGEM ATIVA A PARTIR DA PLANILHA
+// ══════════════════════════════════════════════════════════════
 async function verificarNovosLeads(manual = false) {
   if (verificacaoRodando) {
     console.log('Verificação já em andamento, pulando');
@@ -591,7 +727,7 @@ async function verificarNovosLeads(manual = false) {
       }
 
       if ((await getAbordadosHoje()) >= TETO_DIARIO) {
-        console.log(`Teto diário atingido no meio da rodada. Parando.`);
+        console.log('Teto diário atingido no meio da rodada. Parando.');
         break;
       }
 
@@ -607,7 +743,6 @@ async function verificarNovosLeads(manual = false) {
       const tratativa = row[8] || '';
 
       if (tratativa.trim()) continue;
-
       if (!isLeadRecente(data)) continue;
 
       const numeroLimpo = limparTelefone(telefone);
@@ -621,7 +756,7 @@ async function verificarNovosLeads(manual = false) {
 
       const jaAbordado = await isNumeroAbordado(numeroLimpo);
       if (jaAbordado) {
-        console.log(`Linha ${i + 1}: ${nome} (${numeroLimpo}) já foi abordado antes, pulando`);
+        console.log(`Linha ${i + 1}: ${nome} já foi abordado antes, pulando`);
         await atualizarTratativa(i + 1, 'duplicado, já abordado');
         continue;
       }
@@ -629,50 +764,39 @@ async function verificarNovosLeads(manual = false) {
       console.log(`Abordando lead: ${nome} (${empresa}) - ${numeroLimpo}`);
 
       const primeiroNome = nome.split(' ')[0];
-      const nomeEmpresa = empresa.trim() && empresa.trim().toLowerCase() !== 'não tenho' && empresa.trim().toLowerCase() !== 'nao tenho';
+      const empresaValida = empresa.trim() &&
+        empresa.trim().toLowerCase() !== 'não tenho' &&
+        empresa.trim().toLowerCase() !== 'nao tenho';
+      // O template exige as duas variáveis preenchidas. Sem empresa, o texto
+      // ainda lê bem como "o projeto da sua empresa".
+      const nomeEmpresa = empresaValida ? empresa.trim() : 'sua empresa';
 
-      const mensagemInicial = nomeEmpresa
-        ? `Olá, ${primeiroNome}! Tudo bem?\n\nVi que você demonstrou interesse em conhecer a Ginger Fragrance Design. Fico feliz!\n\nA gente desenvolve fragrâncias estratégicas para indústrias como a ${empresa}, ajudando marcas a se diferenciarem com identidade olfativa própria.\n\nPosso entender melhor o que vocês estão buscando?`
-        : `Olá, ${primeiroNome}! Tudo bem?\n\nVi que você demonstrou interesse em conhecer a Ginger Fragrance Design. Fico feliz!\n\nA gente desenvolve fragrâncias estratégicas para indústrias, ajudando marcas a se diferenciarem com identidade olfativa própria.\n\nMe conta um pouco sobre o seu projeto?`;
+      const envio = await enviarTemplateAbordagem(numeroLimpo, primeiroNome, nomeEmpresa);
 
-      const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
-      const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
-
-      let envioConfirmado = false;
-      try {
-        const zapiResponse = await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-text`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Client-Token': process.env.ZAPI_CLIENT_TOKEN },
-          body: JSON.stringify({
-            phone: numeroLimpo,
-            message: mensagemInicial
-          })
-        });
-        const zapiResult = await zapiResponse.json();
-        envioConfirmado = envioZapiOk(zapiResponse.ok, zapiResult);
-        console.log(`Resultado envio para ${primeiroNome} (ok=${envioConfirmado}):`, JSON.stringify(zapiResult));
-      } catch(e) {
-        console.error(`Erro ao enviar para ${nome}:`, e.message);
-      }
-
-      if (!envioConfirmado) {
-        console.log(`⚠️ Envio NÃO confirmado para ${nome} (${numeroLimpo}). Lead NÃO marcado como abordado. Provável Z-API desconectada. Interrompendo a rodada.`);
+      if (!envio.ok) {
+        console.log(`⚠️ Envio NÃO confirmado para ${nome}. Lead NÃO marcado como abordado. Interrompendo a rodada.`);
         break;
       }
 
-      // Envio confirmado: marca tratativa, carimba origem, registra e salva a conversa.
       await atualizarTratativa(i + 1, 'abordado pelo agente');
-      await atualizarOrigem(i + 1, 'bot-planilha'); // ← carimbo de origem
+      await atualizarOrigem(i + 1, 'bot-planilha');
       await marcarNumeroAbordado(numeroLimpo);
       const totalHoje = await incrementarAbordadosHoje();
       console.log(`Abordado com sucesso. Total hoje: ${totalHoje}/${TETO_DIARIO}`);
+
+      // Reconstrói o texto do template para o histórico, para o Claude saber
+      // exatamente o que o lead recebeu.
+      const textoTemplate =
+        `Olá, ${primeiroNome}! Aqui é a Ginger Fragrance Design.\n\n` +
+        `Recebemos o seu contato e queremos entender o projeto da ${nomeEmpresa} para indicar o melhor caminho em fragrância.\n\n` +
+        `Podemos conversar rapidamente por aqui?`;
 
       const historico = [
         {
           role: 'user',
           content: `[CONTEXTO INTERNO — não mencionar ao lead]\nLead da landing page ginger.ind.br/ginger:\nNome: ${nome}\nEmail: ${email}\nTelefone: ${telefone}\nEmpresa: ${empresa}\nCidade: ${cidade}\nFaturamento: ${faturamento}\nCNPJ: ${cnpj}\n\nUse essas informações para personalizar a conversa. Já enviamos a mensagem de abertura abaixo. Aguarde a resposta do lead para continuar. Não peça informações que já foram fornecidas aqui.`
         },
-        { role: 'assistant', content: mensagemInicial }
+        { role: 'assistant', content: textoTemplate }
       ];
       await saveConversa(numeroLimpo, historico);
       await setLeadPlanilha(numeroLimpo, i + 1);
@@ -698,7 +822,12 @@ async function verificarNovosLeads(manual = false) {
 
 // ── ROTA: HEALTH CHECK
 app.get('/', (req, res) => {
-  res.json({ status: 'Servidor Ginger online', redis: REDIS_URL ? 'configurado' : 'não configurado' });
+  res.json({
+    status: 'Servidor Ginger online',
+    canal: 'WhatsApp Cloud API (Meta)',
+    redis: REDIS_URL ? 'configurado' : 'não configurado',
+    phoneNumberId: WA_PHONE_ID ? 'configurado' : 'NÃO CONFIGURADO'
+  });
 });
 
 // ── ROTA: CHAT DO SITE
@@ -728,42 +857,75 @@ app.post('/chat', async (req, res) => {
   }
 });
 
-// ── ROTA: WHATSAPP Z-API (recebe mensagem e responde)
-app.post('/whatsapp-zapi', async (req, res) => {
-  console.log('WEBHOOK RECEBIDO:', JSON.stringify(req.body).substring(0, 500));
+// ══════════════════════════════════════════════════════════════
+// ── WEBHOOK CLOUD API — VERIFICAÇÃO (GET)
+// ══════════════════════════════════════════════════════════════
+// A Meta chama esta rota uma vez, ao salvar o webhook no painel.
+app.get('/whatsapp-cloud', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === WA_VERIFY_TOKEN) {
+    console.log('Webhook verificado pela Meta com sucesso');
+    return res.status(200).send(challenge);
+  }
+  console.log('Falha na verificação do webhook. Token recebido não confere.');
+  return res.sendStatus(403);
+});
+
+// ══════════════════════════════════════════════════════════════
+// ── WEBHOOK CLOUD API — MENSAGENS (POST)
+// ══════════════════════════════════════════════════════════════
+app.post('/whatsapp-cloud', async (req, res) => {
+  // Responder 200 imediatamente. Se demorar, a Meta reenvia o evento.
   res.status(200).json({ ok: true });
 
   try {
-    const body = req.body;
-    if (body.fromMe) return;
+    const entry = req.body?.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    if (!value) return;
 
-    const numero = body.phone;
-    const mensagem = body.text?.message || body.text;
+    // Eventos de status (entregue, lido) chegam aqui também. Ignorar.
+    if (!value.messages || !value.messages.length) return;
 
-    if (!numero || !mensagem || typeof mensagem !== 'string' || !mensagem.trim()) {
-      if (numero && !mensagem && (body.audio || body.image || body.video || body.document || body.sticker)) {
-        console.log('Mídia recebida de:', numero);
-        const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
-        const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
-        try {
-          await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-text`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Client-Token': process.env.ZAPI_CLIENT_TOKEN },
-            body: JSON.stringify({
-              phone: numero,
-              message: 'Desculpa, no momento só consigo receber mensagens de texto. Pode digitar para mim? Assim consigo te ajudar melhor!'
-            })
-          });
-        } catch(e) {
-          console.error('Erro ao responder mídia:', e.message);
-        }
+    const msg = value.messages[0];
+    const numero = msg.from;              // wa_id, usar exatamente assim para responder
+    const msgId = msg.id;
+
+    if (await jaProcessouMensagem(msgId)) {
+      console.log('Evento duplicado ignorado:', msgId);
+      return;
+    }
+
+    // Extrai o texto conforme o tipo
+    let mensagem = null;
+    if (msg.type === 'text') {
+      mensagem = msg.text?.body;
+    } else if (msg.type === 'button') {
+      // Clique em botão de resposta rápida do template
+      mensagem = msg.button?.text;
+    } else if (msg.type === 'interactive') {
+      mensagem = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title;
+    }
+
+    // Mídia: responde pedindo texto e encerra
+    if (!mensagem || !mensagem.trim()) {
+      const tiposMidia = ['audio', 'image', 'video', 'document', 'sticker', 'location', 'contacts'];
+      if (tiposMidia.includes(msg.type)) {
+        console.log(`Mídia (${msg.type}) recebida de:`, numero);
+        await marcarLidoEDigitando(msgId);
+        await enviarTexto(numero, 'Desculpa, no momento só consigo receber mensagens de texto. Pode digitar para mim? Assim consigo te ajudar melhor!');
         return;
       }
-      console.log('Mensagem ignorada: sem numero ou texto valido');
+      console.log('Mensagem ignorada: tipo não tratado', msg.type);
       return;
     }
 
     console.log('Processando mensagem de:', numero, 'Texto:', mensagem.substring(0, 100));
+
+    await marcarLidoEDigitando(msgId);
 
     let historico = await getConversa(numero) || [];
     historico.push({ role: 'user', content: mensagem });
@@ -787,7 +949,7 @@ app.post('/whatsapp-zapi', async (req, res) => {
     });
 
     const data = await response.json();
-    if (!data.content) console.log('CLAUDE ERRO /zapi:', JSON.stringify(data).substring(0, 800));
+    if (!data.content) console.log('CLAUDE ERRO /whatsapp-cloud:', JSON.stringify(data).substring(0, 800));
     const raw = data.content?.[0]?.text || 'Não consegui processar. Pode repetir?';
 
     console.log('Resposta gerada para:', numero);
@@ -821,7 +983,7 @@ app.post('/whatsapp-zapi', async (req, res) => {
             }
             if (rowIndex) {
               await atualizarTratativa(rowIndex, parsed.classificacao);
-              await atualizarOrigem(rowIndex, 'bot-site'); // ← carimbo de origem (chat)
+              await atualizarOrigem(rowIndex, 'bot-site');
             }
           } else {
             console.log('Lead com dados mas SEM classificação, aguardando conclusão:', parsed.nome);
@@ -839,31 +1001,18 @@ app.post('/whatsapp-zapi', async (req, res) => {
     historico.push({ role: 'assistant', content: raw });
     await saveConversa(numero, historico);
 
-    const ZAPI_ID = process.env.ZAPI_INSTANCE_ID;
-    const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
-
-    // ── DELAY HUMANIZADO (20s a 45s) + "digitando" antes de enviar.
     await delayHumanizado();
-    await enviarDigitando(numero, 4000);
-    await delay(4000);
+    await marcarLidoEDigitando(msgId);
+    await delay(3000);
 
-    const zapiResponse = await fetch(`https://api.z-api.io/instances/${ZAPI_ID}/token/${ZAPI_TOKEN}/send-text`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Client-Token': process.env.ZAPI_CLIENT_TOKEN },
-      body: JSON.stringify({
-        phone: numero,
-        message: resposta
-      })
-    });
-
-    const zapiResult = await zapiResponse.json();
-    console.log('Z-API resposta:', JSON.stringify(zapiResult));
+    const envio = await enviarTexto(numero, resposta);
+    console.log('Envio da resposta:', envio.ok ? 'ok' : 'FALHOU');
 
     if (leadDetectado) {
       await enviarEmailLead(leadDetectado, numero);
     }
   } catch(error) {
-    console.error('Erro WhatsApp Z-API:', error.message);
+    console.error('Erro WhatsApp Cloud:', error.message);
   }
 });
 
@@ -925,7 +1074,7 @@ app.get('/claude-test', async (req, res) => {
   }
 });
 
-// ── ROTA: TESTAR ACESSO À PLANILHA (debug) — útil para confirmar o compartilhamento
+// ── ROTA: TESTAR ACESSO À PLANILHA (debug)
 app.get('/sheet-test', async (req, res) => {
   try {
     const sheets = await getSheetsClient();
@@ -938,6 +1087,31 @@ app.get('/sheet-test', async (req, res) => {
   } catch(e) {
     res.status(500).json({ status: 'ERRO ao acessar planilha', erro: e.message, dica: 'Confirme que a conta de serviço (client_email) está compartilhada como Editor nesta planilha.' });
   }
+});
+
+// ── ROTA: TESTAR CREDENCIAIS DA CLOUD API (debug)
+// Confirma que token e Phone Number ID estão corretos, sem enviar mensagem.
+app.get('/cloud-test', async (req, res) => {
+  try {
+    const r = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${WA_PHONE_ID}?fields=display_phone_number,verified_name,quality_rating`, {
+      headers: { 'Authorization': `Bearer ${WA_TOKEN}` }
+    });
+    const data = await r.json();
+    res.json({ status: r.status, data });
+  } catch(e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+// ── ROTA: TESTE DE ABORDAGEM MANUAL (debug)
+// Exemplo: /cloud-template-test?numero=5519982920025&nome=Pedro&empresa=Ginger
+app.get('/cloud-template-test', async (req, res) => {
+  const { numero, nome, empresa } = req.query;
+  if (!numero || !nome) {
+    return res.status(400).json({ erro: 'informe numero e nome na query' });
+  }
+  const r = await enviarTemplateAbordagem(numero, nome, empresa || 'sua empresa');
+  res.json(r);
 });
 
 // ── FUNÇÃO: ENVIAR EMAIL DE LEAD via Resend
@@ -1011,12 +1185,20 @@ setInterval(() => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`Servidor Ginger rodando na porta ${PORT}`);
+  console.log('Canal: WhatsApp Cloud API (Meta)');
+  console.log('Phone Number ID:', WA_PHONE_ID || 'NÃO CONFIGURADO');
+  console.log('Template de abordagem:', TEMPLATE_ABORDAGEM, TEMPLATE_IDIOMA);
   console.log('Planilha:', SPREADSHEET_ID);
   console.log('Redis Upstash: ' + (REDIS_URL ? 'CONFIGURADO' : 'NÃO CONFIGURADO'));
-  console.log('Delay humanizado: 20s a 45s');
+  console.log(`Delay de resposta: ${RESPOSTA_DELAY_MIN_MS / 1000}s a ${RESPOSTA_DELAY_MAX_MS / 1000}s`);
+  console.log('Teste credenciais Meta: GET /cloud-test');
   console.log('Teste planilha: GET /sheet-test');
   console.log('Teste Redis: GET /redis-test');
   console.log('Teste Claude: GET /claude-test');
+
+  if (!WA_TOKEN || !WA_PHONE_ID || !WA_VERIFY_TOKEN) {
+    console.warn('⚠️ Faltam variáveis da Cloud API. Configure WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID e WHATSAPP_VERIFY_TOKEN no Render.');
+  }
 
   if (REDIS_URL) {
     const teste = await redis('PING');

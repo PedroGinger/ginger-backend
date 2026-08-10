@@ -43,6 +43,8 @@ function headersWa() {
 // ── GOOGLE SHEETS CONFIG
 const SPREADSHEET_ID = '1xDO8V0cx474-zceEGiDLufzkdm4JjeQnmRAHbR22xv8';
 const SHEET_NAME = 'Página1';
+// Aba de historico de conversas. Criada automaticamente se nao existir.
+const SHEET_CONVERSAS = 'Conversas';
 let sheetsClient = null;
 
 async function getSheetsClient() {
@@ -491,7 +493,7 @@ function isHorarioComercial() {
   return true;
 }
 
-function isLeadRecente(dataStr) {
+function isLeadRecente(dataStr, janelaHoras = 24) {
   try {
     const partes = dataStr.split(' ');
     if (partes.length < 2) return false;
@@ -508,9 +510,7 @@ function isLeadRecente(dataStr) {
     const diffMs = agora.getTime() - dataLead.getTime();
     const diffHoras = diffMs / (1000 * 60 * 60);
 
-    console.log(`Data lead: ${dataStr} | Diff: ${diffHoras.toFixed(1)}h | Recente: ${diffHoras <= 24}`);
-
-    return diffHoras >= 0 && diffHoras <= 24;
+    return diffHoras >= 0 && diffHoras <= janelaHoras;
   } catch(e) {
     console.log('Erro ao parsear data:', dataStr, e.message);
     return false;
@@ -678,9 +678,77 @@ async function atualizarOrigem(rowIndex, origem) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// ── HISTÓRICO DE CONVERSAS NA PLANILHA
+// ══════════════════════════════════════════════════════════════
+// O Redis guarda a conversa por 24h e nao e legivel por humanos. A Cloud API
+// tambem nao oferece caixa de entrada. Entao cada mensagem e registrada numa
+// aba propria, que serve de historico permanente e de base para as metricas.
+let abaConversasOk = false;
+
+async function garantirAbaConversas(sheets) {
+  if (abaConversasOk) return true;
+  try {
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+    const existe = (meta.data.sheets || []).some(
+      sh => sh.properties && sh.properties.title === SHEET_CONVERSAS
+    );
+    if (!existe) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: SPREADSHEET_ID,
+        requestBody: { requests: [{ addSheet: { properties: { title: SHEET_CONVERSAS } } }] }
+      });
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `${SHEET_CONVERSAS}!A1`,
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: [['DATA E HORA', 'NUMERO', 'DIRECAO', 'MENSAGEM', 'ORIGEM']]
+        }
+      });
+      console.log(`Aba "${SHEET_CONVERSAS}" criada na planilha`);
+    }
+    abaConversasOk = true;
+    return true;
+  } catch(e) {
+    console.error('Erro ao garantir aba de conversas:', e.message);
+    return false;
+  }
+}
+
+function agoraBrasil() {
+  const d = new Date();
+  const utc = d.getTime() + (d.getTimezoneOffset() * 60000);
+  const b = new Date(utc + (-3 * 3600000));
+  const p = n => String(n).padStart(2, '0');
+  return `${p(b.getDate())}/${p(b.getMonth() + 1)}/${b.getFullYear()} ${p(b.getHours())}:${p(b.getMinutes())}:${p(b.getSeconds())}`;
+}
+
+// direcao: 'recebida' ou 'enviada'. origem: 'bot-planilha' ou 'bot-site'.
+async function registrarConversa(numero, direcao, mensagem, origem = '') {
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return;
+    if (!(await garantirAbaConversas(sheets))) return;
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_CONVERSAS}!A:E`,
+      valueInputOption: 'RAW',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: {
+        values: [[agoraBrasil(), numero, direcao, (mensagem || '').substring(0, 5000), origem]]
+      }
+    });
+  } catch(e) {
+    console.error('Erro ao registrar conversa:', e.message);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
 // ── ABORDAGEM ATIVA A PARTIR DA PLANILHA
 // ══════════════════════════════════════════════════════════════
-async function verificarNovosLeads(manual = false) {
+// janelaHoras: idade maxima do lead para ser abordado. 24 no automatico.
+// maxRodada: quantos leads no maximo nesta rodada. Usado na rampa do backlog.
+async function verificarNovosLeads(manual = false, janelaHoras = 24, maxRodada = MAX_POR_RODADA) {
   if (verificacaoRodando) {
     console.log('Verificação já em andamento, pulando');
     return { status: 'já em andamento' };
@@ -724,8 +792,8 @@ async function verificarNovosLeads(manual = false) {
     let abordados = 0;
 
     for (let i = 1; i < rows.length; i++) {
-      if (abordados >= MAX_POR_RODADA) {
-        console.log(`Limite de ${MAX_POR_RODADA} leads por rodada atingido`);
+      if (abordados >= maxRodada) {
+        console.log(`Limite de ${maxRodada} leads por rodada atingido`);
         break;
       }
 
@@ -746,7 +814,7 @@ async function verificarNovosLeads(manual = false) {
       const tratativa = row[8] || '';
 
       if (tratativa.trim()) continue;
-      if (!isLeadRecente(data)) continue;
+      if (!isLeadRecente(data, janelaHoras)) continue;
 
       const numeroLimpo = limparTelefone(telefone);
       if (!numeroLimpo) {
@@ -777,7 +845,17 @@ async function verificarNovosLeads(manual = false) {
       const envio = await enviarTemplateAbordagem(numeroLimpo, primeiroNome, nomeEmpresa);
 
       if (!envio.ok) {
-        console.log(`⚠️ Envio NÃO confirmado para ${nome}. Lead NÃO marcado como abordado. Interrompendo a rodada.`);
+        const codigo = envio.data?.error?.code;
+        // Erros do DESTINATARIO: numero invalido ou sem WhatsApp. Marca a linha
+        // e segue para o proximo lead, sem derrubar a rodada inteira.
+        const erroDoDestinatario = [131026, 133010, 131047, 131051].includes(codigo);
+        if (erroDoDestinatario) {
+          console.log(`Linha ${i + 1}: ${nome} com número inválido ou sem WhatsApp (erro ${codigo}). Marcando e seguindo.`);
+          await atualizarTratativa(i + 1, 'número inválido ou sem WhatsApp');
+          continue;
+        }
+        // Qualquer outro erro (token, limite, conta) e sistemico: para tudo.
+        console.log(`⚠️ Erro sistêmico no envio para ${nome} (código ${codigo}). Interrompendo a rodada.`);
         break;
       }
 
@@ -803,10 +881,11 @@ async function verificarNovosLeads(manual = false) {
       ];
       await saveConversa(numeroLimpo, historico);
       await setLeadPlanilha(numeroLimpo, i + 1);
+      await registrarConversa(numeroLimpo, 'enviada', textoTemplate, 'bot-planilha');
 
       abordados++;
 
-      if (abordados < MAX_POR_RODADA) {
+      if (abordados < maxRodada) {
         const intervalo = INTERVALO_MIN_MS + Math.floor(Math.random() * (INTERVALO_MAX_MS - INTERVALO_MIN_MS));
         console.log(`Aguardando ${(intervalo / 1000).toFixed(0)}s antes do próximo envio...`);
         await delay(intervalo);
@@ -931,6 +1010,7 @@ app.post('/whatsapp-cloud', async (req, res) => {
     }
 
     console.log('Processando mensagem de:', numero, 'Texto:', mensagem.substring(0, 100));
+    await registrarConversa(numero, 'recebida', mensagem);
 
     await marcarLidoEDigitando(msgId);
 
@@ -1014,6 +1094,7 @@ app.post('/whatsapp-cloud', async (req, res) => {
 
     const envio = await enviarTexto(numero, resposta);
     console.log('Envio da resposta:', envio.ok ? 'ok' : 'FALHOU');
+    if (envio.ok) await registrarConversa(numero, 'enviada', resposta);
 
     if (leadDetectado) {
       await enviarEmailLead(leadDetectado, numero);
@@ -1024,9 +1105,85 @@ app.post('/whatsapp-cloud', async (req, res) => {
 });
 
 // ── ROTA: VERIFICAÇÃO MANUAL DA PLANILHA
+// Sem parametros: comportamento normal, so leads das ultimas 24h.
+// Com parametros, para a rampa de backlog:
+//   /verificar-leads?dias=15&max=10
+// dias = idade maxima do lead. max = quantos abordar nesta rodada.
 app.get('/verificar-leads', async (req, res) => {
-  const resultado = await verificarNovosLeads(true);
-  res.json(resultado);
+  const dias = req.query.dias ? parseInt(req.query.dias) : 1;
+  const max = req.query.max ? parseInt(req.query.max) : MAX_POR_RODADA;
+
+  if (isNaN(dias) || dias < 1 || dias > 120) {
+    return res.status(400).json({ erro: 'dias deve estar entre 1 e 120' });
+  }
+  if (isNaN(max) || max < 1 || max > 50) {
+    return res.status(400).json({ erro: 'max deve estar entre 1 e 50' });
+  }
+
+  console.log(`Rodada manual: janela de ${dias} dia(s), teto de ${max} leads`);
+  const resultado = await verificarNovosLeads(true, dias * 24, max);
+  res.json({ ...resultado, janelaDias: dias, tetoRodada: max });
+});
+
+// ── ROTA: PRÉVIA DO BACKLOG (nao envia nada)
+// Mostra quantos leads seriam abordados com determinada janela, para voce
+// dimensionar a rampa antes de disparar.
+app.get('/backlog-previa', async (req, res) => {
+  const dias = req.query.dias ? parseInt(req.query.dias) : 30;
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!A:J`
+    });
+    const rows = r.data.values || [];
+    const faixas = { ate7: 0, ate15: 0, ate30: 0, ate45: 0, acima45: 0 };
+    let semTelefone = 0, jaTratados = 0, elegiveis = 0;
+
+    for (let i = 1; i < rows.length; i++) {
+      const tratativa = rows[i][8] || '';
+      if (tratativa.trim()) { jaTratados++; continue; }
+      if (!limparTelefone(rows[i][3] || '')) { semTelefone++; continue; }
+      if (!(rows[i][1] || '').trim()) continue;
+
+      if (isLeadRecente(rows[i][0] || '', dias * 24)) elegiveis++;
+      if (isLeadRecente(rows[i][0] || '', 7 * 24)) faixas.ate7++;
+      else if (isLeadRecente(rows[i][0] || '', 15 * 24)) faixas.ate15++;
+      else if (isLeadRecente(rows[i][0] || '', 30 * 24)) faixas.ate30++;
+      else if (isLeadRecente(rows[i][0] || '', 45 * 24)) faixas.ate45++;
+      else faixas.acima45++;
+    }
+
+    // Puxa a qualidade do numero junto, para voce decidir a rampa sem
+    // precisar abrir outra rota.
+    let qualidade = 'nao consultada';
+    let abordadosHoje = null;
+    try {
+      const q = await fetch(
+        `https://graph.facebook.com/${GRAPH_VERSION}/${WA_PHONE_ID}?fields=quality_rating,status,throughput`,
+        { headers: { 'Authorization': `Bearer ${WA_TOKEN}` } }
+      );
+      const qd = await q.json();
+      qualidade = qd.quality_rating || 'desconhecida';
+      if (qd.status) qualidade += ` (status ${qd.status})`;
+      abordadosHoje = await getAbordadosHoje();
+    } catch(e) { /* segue sem a qualidade */ }
+
+    res.json({
+      totalLinhas: rows.length - 1,
+      jaTratados,
+      semTelefoneValido: semTelefone,
+      elegiveisNaJanela: elegiveis,
+      janelaDias: dias,
+      distribuicaoPorIdade: faixas,
+      qualidadeDoNumero: qualidade,
+      abordadosHoje,
+      tetoDiario: TETO_DIARIO
+    });
+  } catch(e) {
+    res.status(500).json({ erro: e.message });
+  }
 });
 
 // ── ROTA: ENVIO MANUAL DE LEAD
@@ -1277,6 +1434,7 @@ app.listen(PORT, async () => {
   console.log('Teste Redis: GET /redis-test');
   console.log('Teste Claude: GET /claude-test');
   console.log('Status do numero: GET /phone-status');
+  console.log('Previa do backlog: GET /backlog-previa?dias=45');
   console.log('Ativar o numero: GET /phone-register');
   console.log('Ver vinculo do webhook: GET /webhook-status');
   console.log('Criar vinculo do webhook: GET /webhook-subscribe');

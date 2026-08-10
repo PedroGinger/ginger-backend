@@ -881,6 +881,10 @@ app.get('/whatsapp-cloud', (req, res) => {
 // ── WEBHOOK CLOUD API — MENSAGENS (POST)
 // ══════════════════════════════════════════════════════════════
 app.post('/whatsapp-cloud', async (req, res) => {
+  // Log cru de TUDO que a Meta entrega nesta rota. Serve para diferenciar
+  // "nao chega nada" de "chega mas e um evento que o codigo ignora".
+  console.log('WEBHOOK RECEBIDO:', JSON.stringify(req.body).substring(0, 700));
+
   // Responder 200 imediatamente. Se demorar, a Meta reenvia o evento.
   res.status(200).json({ ok: true });
 

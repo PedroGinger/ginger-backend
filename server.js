@@ -914,7 +914,10 @@ app.get('/', (req, res) => {
 
 // ── ROTA: CHAT DO SITE
 app.post('/chat', async (req, res) => {
-  const { messages } = req.body;
+  const { messages, sessionId } = req.body;
+  // Identificador da conversa do site no historico. O visitante nao tem numero,
+  // entao usamos a sessao gerada pelo widget.
+  const idConversa = sessionId ? `site-${sessionId}` : 'site-sem-sessao';
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -933,6 +936,19 @@ app.post('/chat', async (req, res) => {
     const data = await response.json();
     if (!data.content) console.log('CLAUDE ERRO /chat:', JSON.stringify(data).substring(0, 800));
     res.json(data);
+
+    // Registro no historico, sem segurar a resposta do visitante.
+    try {
+      const ultima = Array.isArray(messages) ? messages[messages.length - 1] : null;
+      if (ultima && ultima.role === 'user') {
+        registrarConversa(idConversa, 'recebida', ultima.content, 'bot-site');
+      }
+      const respostaTexto = data.content?.[0]?.text;
+      if (respostaTexto) {
+        const limpo = respostaTexto.replace(/%%%LEAD_DATA%%%[\s\S]*?%%%END_LEAD_DATA%%%/, '').trim();
+        registrarConversa(idConversa, 'enviada', limpo, 'bot-site');
+      }
+    } catch(e) { /* historico nao pode derrubar o chat */ }
   } catch (error) {
     console.error('Erro /chat:', error.message);
     res.status(500).json({ error: 'Erro interno do servidor' });

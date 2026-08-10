@@ -1121,6 +1121,47 @@ app.get('/cloud-template-test', async (req, res) => {
   res.json(r);
 });
 
+// ── ROTA: STATUS DO NÚMERO NA CLOUD API (debug)
+// O campo "status" precisa estar CONNECTED. Se vier PENDING, MIGRATED ou
+// qualquer outra coisa, o numero nao esta ativado e a Meta nao roteia as
+// mensagens recebidas para o webhook.
+app.get('/phone-status', async (req, res) => {
+  try {
+    const campos = 'display_phone_number,verified_name,quality_rating,status,code_verification_status,platform_type,throughput';
+    const r = await fetch(
+      `https://graph.facebook.com/${GRAPH_VERSION}/${WA_PHONE_ID}?fields=${campos}`,
+      { headers: { 'Authorization': `Bearer ${WA_TOKEN}` } }
+    );
+    const data = await r.json();
+    res.json({ status: r.status, data });
+  } catch(e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+// ── ROTA: ATIVAR O NÚMERO NA CLOUD API (rodar uma vez)
+// Define o PIN de verificacao em duas etapas e ativa o numero na infraestrutura
+// da Cloud API. Sem isso o numero fica verificado mas nao conectado.
+// Retorno esperado: {"success":true}
+app.get('/phone-register', async (req, res) => {
+  try {
+    const pin = req.query.pin || '193056';
+    const r = await fetch(
+      `https://graph.facebook.com/${GRAPH_VERSION}/${WA_PHONE_ID}/register`,
+      {
+        method: 'POST',
+        headers: headersWa(),
+        body: JSON.stringify({ messaging_product: 'whatsapp', pin })
+      }
+    );
+    const data = await r.json();
+    console.log('Resultado do phone-register:', JSON.stringify(data));
+    res.json({ status: r.status, pinUsado: pin, data });
+  } catch(e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+
 // ── ROTA: VER O VÍNCULO ENTRE A CONTA WHATSAPP E O APP (debug)
 // Se "data" voltar vazio, a conta não está inscrita em nenhum app e a Meta
 // não tem para onde entregar as mensagens recebidas.
@@ -1235,6 +1276,8 @@ app.listen(PORT, async () => {
   console.log('Teste planilha: GET /sheet-test');
   console.log('Teste Redis: GET /redis-test');
   console.log('Teste Claude: GET /claude-test');
+  console.log('Status do numero: GET /phone-status');
+  console.log('Ativar o numero: GET /phone-register');
   console.log('Ver vinculo do webhook: GET /webhook-status');
   console.log('Criar vinculo do webhook: GET /webhook-subscribe');
 

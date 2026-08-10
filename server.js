@@ -1269,6 +1269,73 @@ app.get('/sheet-test', async (req, res) => {
   }
 });
 
+// ── ROTA: TESTAR ESCRITA NA PLANILHA (debug)
+// Le, cria a aba de conversas e grava uma linha de teste. Devolve o erro exato
+// se falhar. E o unico teste que prova que a conta de servico tem permissao
+// de EDITOR, e nao so de leitor.
+app.get('/sheet-write-test', async (req, res) => {
+  const resultado = { leitura: null, contaDeServico: null, abas: null, criarAba: null, escrita: null };
+  try {
+    try {
+      const creds = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+      resultado.contaDeServico = creds.client_email;
+    } catch(e) {
+      resultado.contaDeServico = 'ERRO ao ler GOOGLE_CREDENTIALS: ' + e.message;
+    }
+
+    const sheets = await getSheetsClient();
+    if (!sheets) {
+      resultado.leitura = 'ERRO: cliente do Sheets nao inicializou';
+      return res.status(500).json(resultado);
+    }
+
+    try {
+      const r = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `${SHEET_NAME}!A1:J1`
+      });
+      resultado.leitura = 'ok';
+      resultado.cabecalho = r.data.values ? r.data.values[0] : [];
+    } catch(e) {
+      resultado.leitura = 'ERRO: ' + e.message;
+    }
+
+    try {
+      const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+      resultado.abas = (meta.data.sheets || []).map(sh => sh.properties.title);
+    } catch(e) {
+      resultado.abas = 'ERRO: ' + e.message;
+    }
+
+    abaConversasOk = false;
+    try {
+      const ok = await garantirAbaConversas(sheets);
+      resultado.criarAba = ok ? 'ok' : 'falhou, ver log';
+    } catch(e) {
+      resultado.criarAba = 'ERRO: ' + e.message;
+    }
+
+    try {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `${SHEET_CONVERSAS}!A:E`,
+        valueInputOption: 'RAW',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: {
+          values: [[agoraBrasil(), 'teste-escrita', 'sistema', 'Linha de teste. Pode apagar.', 'debug']]
+        }
+      });
+      resultado.escrita = 'ok';
+    } catch(e) {
+      resultado.escrita = 'ERRO: ' + e.message;
+    }
+
+    res.json(resultado);
+  } catch(e) {
+    res.status(500).json({ ...resultado, erroGeral: e.message });
+  }
+});
+
 // ── ROTA: TESTAR CREDENCIAIS DA CLOUD API (debug)
 // Confirma que token e Phone Number ID estão corretos, sem enviar mensagem.
 app.get('/cloud-test', async (req, res) => {
@@ -1446,7 +1513,8 @@ app.listen(PORT, async () => {
   console.log('Redis Upstash: ' + (REDIS_URL ? 'CONFIGURADO' : 'NÃO CONFIGURADO'));
   console.log(`Delay de resposta: ${RESPOSTA_DELAY_MIN_MS / 1000}s a ${RESPOSTA_DELAY_MAX_MS / 1000}s`);
   console.log('Teste credenciais Meta: GET /cloud-test');
-  console.log('Teste planilha: GET /sheet-test');
+  console.log('Teste planilha (leitura): GET /sheet-test');
+  console.log('Teste planilha (escrita): GET /sheet-write-test');
   console.log('Teste Redis: GET /redis-test');
   console.log('Teste Claude: GET /claude-test');
   console.log('Status do numero: GET /phone-status');

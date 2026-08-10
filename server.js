@@ -21,6 +21,9 @@ const GRAPH_VERSION = 'v21.0';
 const WA_TOKEN = process.env.WHATSAPP_TOKEN;
 const WA_PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WA_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
+// ID da WhatsApp Business Account. Usado para consultar e criar o vinculo
+// entre a conta e o app, que e o que faz a Meta entregar os webhooks.
+const WABA_ID = '4379210335742127';
 
 // Template aprovado para abordagem ativa (lead frio, fora da janela de 24h)
 const TEMPLATE_ABORDAGEM = 'abordagem_lead_ginger';
@@ -1114,6 +1117,39 @@ app.get('/cloud-template-test', async (req, res) => {
   res.json(r);
 });
 
+// ── ROTA: VER O VÍNCULO ENTRE A CONTA WHATSAPP E O APP (debug)
+// Se "data" voltar vazio, a conta não está inscrita em nenhum app e a Meta
+// não tem para onde entregar as mensagens recebidas.
+app.get('/webhook-status', async (req, res) => {
+  try {
+    const r = await fetch(
+      `https://graph.facebook.com/${GRAPH_VERSION}/${WABA_ID}/subscribed_apps`,
+      { headers: { 'Authorization': `Bearer ${WA_TOKEN}` } }
+    );
+    const data = await r.json();
+    res.json({ status: r.status, wabaId: WABA_ID, data });
+  } catch(e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+// ── ROTA: CRIAR O VÍNCULO (rodar uma vez)
+// Inscreve o app nesta WhatsApp Business Account. Retorno esperado:
+// {"success":true}. Depois disso as mensagens começam a chegar no webhook.
+app.get('/webhook-subscribe', async (req, res) => {
+  try {
+    const r = await fetch(
+      `https://graph.facebook.com/${GRAPH_VERSION}/${WABA_ID}/subscribed_apps`,
+      { method: 'POST', headers: { 'Authorization': `Bearer ${WA_TOKEN}` } }
+    );
+    const data = await r.json();
+    console.log('Resultado do webhook-subscribe:', JSON.stringify(data));
+    res.json({ status: r.status, wabaId: WABA_ID, data });
+  } catch(e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+
 // ── FUNÇÃO: ENVIAR EMAIL DE LEAD via Resend
 async function enviarEmailLead(lead, numero = null) {
   if (!validarLead(lead)) {
@@ -1195,6 +1231,8 @@ app.listen(PORT, async () => {
   console.log('Teste planilha: GET /sheet-test');
   console.log('Teste Redis: GET /redis-test');
   console.log('Teste Claude: GET /claude-test');
+  console.log('Ver vinculo do webhook: GET /webhook-status');
+  console.log('Criar vinculo do webhook: GET /webhook-subscribe');
 
   if (!WA_TOKEN || !WA_PHONE_ID || !WA_VERIFY_TOKEN) {
     console.warn('⚠️ Faltam variáveis da Cloud API. Configure WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID e WHATSAPP_VERIFY_TOKEN no Render.');

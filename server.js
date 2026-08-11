@@ -1880,11 +1880,9 @@ app.get('/facebook-test', async (req, res) => {
   const n = await chamarFacebook('/me?fields=name');
   resultado.nomeDaPagina = n.ok ? n.data.name
     : 'indisponível, falta pages_read_engagement (não impede o envio de mensagens)';
-  if (r.ok && FB_PAGE_ID && String(r.data.id) !== String(FB_PAGE_ID)) {
-    resultado.diagnostico = `O token pertence à página ${r.data.id}, mas FACEBOOK_PAGE_ID ` +
-      `está como ${FB_PAGE_ID}. O envio funciona mesmo assim, porque usa /me, mas a trava ` +
-      `de eco compara com esse ID. Corrija a variável no Render.`;
-  }
+  // Nao da para confirmar o ID da Pagina sem pages_read_engagement, entao esta
+  // rota nao tenta mais adivinhar. A trava principal contra eco e o campo
+  // is_echo da propria Meta; o FACEBOOK_PAGE_ID e so uma segunda barreira.
   if (!r.ok && r.data && r.data.error) {
     const cod = r.data.error.code;
     if (cod === 190) {

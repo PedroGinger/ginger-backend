@@ -1072,13 +1072,18 @@ async function chamarFacebook(caminho, opts) {
   const data = await r.json();
   return { ok: r.ok && !data.error, status: r.status, data };
 }
+// Todas as chamadas usam /me em vez de /{ID_DA_PAGINA}. Com token de Pagina,
+// /me JA resolve para a propria Pagina, entao o ID deixa de ser um ponto de
+// falha. Pedir /{ID} exige que o ID esteja certo E que o token tenha permissao
+// de ver aquele no especifico, e quando algo nao bate a Meta devolve o erro
+// #100, "Object does not exist", que nao diz qual das duas coisas falhou.
 async function enviarFacebook(psid, texto) {
-  if (!FB_TOKEN || !FB_PAGE_ID) {
-    console.error('Facebook nao configurado: faltam FACEBOOK_PAGE_TOKEN e/ou FACEBOOK_PAGE_ID');
+  if (!FB_TOKEN) {
+    console.error('Facebook nao configurado: falta FACEBOOK_PAGE_TOKEN');
     return { ok: false, erro: 'nao configurado' };
   }
   try {
-    const r = await chamarFacebook(`/${FB_PAGE_ID}/messages`, {
+    const r = await chamarFacebook(`/me/messages`, {
       method: 'POST',
       body: JSON.stringify({
         recipient: { id: psid },
@@ -1104,12 +1109,12 @@ async function enviarFacebook(psid, texto) {
   }
 }
 async function marcarVistoFacebook(psid) {
-  if (!FB_PAGE_ID) return;
+  if (!FB_TOKEN) return;
   try {
-    await chamarFacebook(`/${FB_PAGE_ID}/messages`, {
+    await chamarFacebook(`/me/messages`, {
       method: 'POST', body: JSON.stringify({ recipient: { id: psid }, sender_action: 'mark_seen' })
     });
-    await chamarFacebook(`/${FB_PAGE_ID}/messages`, {
+    await chamarFacebook(`/me/messages`, {
       method: 'POST', body: JSON.stringify({ recipient: { id: psid }, sender_action: 'typing_on' })
     });
   } catch(e) { /* indicador visual nunca derruba o atendimento */ }
@@ -1856,17 +1861,32 @@ app.get('/facebook-test', async (req, res) => {
     pageIdConfigurado: !!FB_PAGE_ID,
     verifyTokenConfigurado: !!META_VERIFY_TOKEN
   };
-  if (!FB_TOKEN || !FB_PAGE_ID) {
-    resultado.dica = 'Faltam FACEBOOK_PAGE_TOKEN e/ou FACEBOOK_PAGE_ID no Render.';
+  if (!FB_TOKEN) {
+    resultado.dica = 'Falta FACEBOOK_PAGE_TOKEN no Render.';
     return res.status(503).json(resultado);
   }
-  const r = await chamarFacebook(`/${FB_PAGE_ID}?fields=id,name,username`);
+  // Pergunta ao proprio token quem ele e, em vez de consultar um ID que pode
+  // estar errado. Assim o diagnostico separa "token ruim" de "ID errado".
+  const r = await chamarFacebook('/me?fields=id,name');
   resultado.status = r.status;
   resultado.pagina = r.data;
-  if (!r.ok && r.data && r.data.error && r.data.error.code === 190) {
-    resultado.diagnostico = 'Token rejeitado. Confirme que é um token de PÁGINA, ' +
-      'não o token do Instagram: o Messenger fala com graph.facebook.com e o ' +
-      'Instagram com graph.instagram.com.';
+  resultado.idConfigurado = FB_PAGE_ID || null;
+  if (r.ok && FB_PAGE_ID && String(r.data.id) !== String(FB_PAGE_ID)) {
+    resultado.diagnostico = `O token pertence à página ${r.data.id}, mas FACEBOOK_PAGE_ID ` +
+      `está como ${FB_PAGE_ID}. O envio funciona mesmo assim, porque usa /me, mas a trava ` +
+      `de eco compara com esse ID. Corrija a variável no Render.`;
+  }
+  if (!r.ok && r.data && r.data.error) {
+    const cod = r.data.error.code;
+    if (cod === 190) {
+      resultado.diagnostico = 'Token rejeitado. Confirme que é um token de PÁGINA, ' +
+        'não o token do Instagram: o Messenger fala com graph.facebook.com e o ' +
+        'Instagram com graph.instagram.com.';
+    } else if (cod === 100) {
+      resultado.diagnostico = 'A Meta não reconheceu o pedido. Em geral é token de ' +
+        'usuário no lugar de token de Página, ou o token foi copiado incompleto. ' +
+        'Gere de novo em Messenger API Settings, na coluna Token da Página.';
+    }
   }
   if (req.query.para) {
     resultado.envioDeTeste = await enviarFacebook(req.query.para, req.query.texto || 'Teste do agente Ginger.');
@@ -1969,89 +1989,9 @@ app.get('/backlog-previa', async (req, res) => {
     res.status(500).json({ erro: e.message });
   }
 });
-// ══════════════════════════════════════════════════════════════
-// ── ROTA: MÉTRICAS DE LEADS DA INTERNET
-// ══════════════════════════════════════════════════════════════
-// Funil dos leads de origem digital, mes a mes. Responde a pergunta
-// "qual o retorno de abertura de projetos dos leads que vem da internet".
-// Exemplo: /metricas?mes=8&ano=2026
-//
-// As etapas de retorno do cliente e faturamento vivem no Otimizah, nao aqui.
-// A ponte entre os dois e a coluna PROJETO (M), preenchida pelo comercial no
-// momento em que abre o projeto. Sem ela, as duas bases nao se cruzam.
-app.get('/metricas', async (req, res) => {
-  const agora = new Date();
-  const brasil = new Date(agora.getTime() + (agora.getTimezoneOffset() * 60000) + (-3 * 3600000));
-  const mes = req.query.mes ? parseInt(req.query.mes) : brasil.getMonth() + 1;
-  const ano = req.query.ano ? parseInt(req.query.ano) : brasil.getFullYear();
-  if (isNaN(mes) || mes < 1 || mes > 12) return res.status(400).json({ erro: 'mes deve estar entre 1 e 12' });
-  if (isNaN(ano) || ano < 2020 || ano > 2100) return res.status(400).json({ erro: 'ano invalido' });
-  try {
-    const sheets = await getSheetsClient();
-    if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
-    const r = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A:O`
-    });
-    const rows = r.data.values || [];
-    const porOrigem = {};
-    const porQualificacao = {};
-    let captados = 0, atendidos = 0, comQualificacao = 0;
-    let bons = 0, projetosAbertos = 0, projetosDeLeadBom = 0;
-    const semProjeto = [];
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      const ma = mesAnoDaData(row[0] || '');
-      if (!ma || ma.mes !== mes || ma.ano !== ano) continue;
-      captados++;
-      const origem = (row[9] || 'sem origem').trim() || 'sem origem';
-      porOrigem[origem] = (porOrigem[origem] || 0) + 1;
-      const statusAtual = (row[8] || '').trim();
-      if (statusAtual) atendidos++;
-      const qual = (row[10] || '').trim().toUpperCase();
-      if (qual) {
-        comQualificacao++;
-        porQualificacao[qual] = (porQualificacao[qual] || 0) + 1;
-        if (qual === 'BOM') bons++;
-      }
-      const projeto = (row[12] || '').trim();
-      if (projeto) {
-        projetosAbertos++;
-        if (qual === 'BOM') projetosDeLeadBom++;
-      } else if (qual === 'BOM') {
-        semProjeto.push({ linha: i + 1, nome: row[1] || '', empresa: row[4] || '' });
-      }
-    }
-    const pct = (a, b) => b > 0 ? Math.round((a / b) * 1000) / 10 : null;
-    res.json({
-      periodo: `${String(mes).padStart(2, '0')}/${ano}`,
-      funil: {
-        captados,
-        atendidos,
-        comQualificacao,
-        qualificadosBom: bons,
-        projetosAbertos,
-        projetosAbertosDeLeadBom: projetosDeLeadBom
-      },
-      taxas: {
-        atendimento: pct(atendidos, captados),
-        qualificacao: pct(bons, comQualificacao),
-        aberturaDeProjeto: pct(projetosDeLeadBom, bons)
-      },
-      porOrigem,
-      porQualificacao,
-      leadsBomSemProjetoAberto: semProjeto,
-      pendente: {
-        taxaDeSilencio: 'depende do retorno do cliente, dado vive no Otimizah',
-        conversaoEmPedido: 'depende do faturamento, cruzar pela coluna PROJETO',
-        ticketMedio: 'depende do faturamento, cruzar pela coluna PROJETO'
-      },
-      observacao: 'A coluna PROJETO (M) e a chave que liga este funil a base do Otimizah. Linhas BOM sem projeto aberto aparecem em leadsBomSemProjetoAberto, para cobranca do comercial.'
-    });
-  } catch(e) {
-    res.status(500).json({ erro: e.message });
-  }
-});
+// Nota da sessao 22: a rota /metricas foi REMOVIDA. Ela devolvia em JSON o
+// mesmo funil que o /painel mostra na tela, com filtros e tabela. Manter as
+// duas significava corrigir a mesma conta em dois lugares.
 // ══════════════════════════════════════════════════════════════
 // ── INBOX: AUDITORIA DAS CONVERSAS
 // ══════════════════════════════════════════════════════════════
@@ -2315,19 +2255,7 @@ function fmtPct(a, b) {
   return (Math.round((a / b) * 1000) / 10).toString().replace('.', ',') + '%';
 }
 app.get('/painel', async (req, res) => {
-  const chaveEsperada = process.env.INBOX_KEY;
-  if (!chaveEsperada) {
-    return res.status(503).type('text/plain; charset=utf-8')
-      .send('Painel desativado. Falta criar a variavel INBOX_KEY no Render.');
-  }
-  if (req.query.chave !== chaveEsperada) {
-    return res.status(403).type('text/plain; charset=utf-8').send('Chave invalida.');
-  }
-  const agora = new Date();
-  const brasil = new Date(agora.getTime() + (agora.getTimezoneOffset() * 60000) + (-3 * 3600000));
-  const mes = req.query.mes ? parseInt(req.query.mes) : brasil.getMonth() + 1;
-  const ano = req.query.ano ? parseInt(req.query.ano) : brasil.getFullYear();
-  const todos = req.query.todos === '1';
+  if (!exigeChave(req, res)) return;
   try {
     const sheets = await getSheetsClient();
     if (!sheets) return res.status(500).type('text/plain').send('Sheets indisponivel');
@@ -2350,20 +2278,16 @@ app.get('/painel', async (req, res) => {
     }
     const agoraMs = Date.now();
     const H24 = 24 * 3600 * 1000;
-    const linhasP = (rl.data.values || []).slice(1);
     const usadas = new Set();
     const leads = [];
-    // Quantos leads no arquivo INTEIRO tem a coluna PROJETO preenchida. Serve
-    // para distinguir "nao houve projeto" de "ninguem preencheu o campo".
     let projetosNoArquivoTodo = 0;
-    for (let i = 0; i < linhasP.length; i++) {
-      const row = linhasP[i];
+    // Manda TODOS os leads para o navegador, com mes e ano em cada um. Assim a
+    // troca de mes e a comparacao com o mes anterior acontecem na hora, sem
+    // recarregar a pagina e sem reler a planilha, que e a parte lenta.
+    for (const row of (rl.data.values || []).slice(1)) {
       if ((row[12] || '').trim()) projetosNoArquivoTodo++;
+      if (!(row[1] || '').trim() && !(row[3] || '').trim() && !(row[COL_ID_CANAL] || '').trim()) continue;
       const ma = mesAnoDaData(row[0] || '');
-      if (!todos && (!ma || ma.mes !== mes || ma.ano !== ano)) continue;
-      if (!(row[1] || '').trim() && !(row[3] || '').trim()) continue;
-      // Um lead pode ser encontrado pelo telefone ou pelo ID do canal.
-      // O de Instagram so tem o segundo.
       const kTel = chaveNumero(row[3] || '');
       const kCanal = (row[COL_ID_CANAL] || '').trim();
       if (kTel) usadas.add(kTel);
@@ -2379,7 +2303,9 @@ app.get('/painel', async (req, res) => {
       else if (c.ultima && (agoraMs - c.ultima) <= H24) estado = 'em_conversa';
       else estado = 'abandonou';
       leads.push({
-        data: (row[0] || '').split(' ')[0], nome: row[1] || '', empresa: row[4] || '',
+        data: (row[0] || '').split(' ')[0],
+        mes: ma ? ma.mes : 0, ano: ma ? ma.ano : 0,
+        nome: row[1] || '', empresa: row[4] || '',
         origem: (row[9] || '').trim() || 'sem origem', qual, motivo: row[11] || '',
         projeto: (row[12] || '').trim(), msgs: c.total, recebidas: c.recebidas,
         ultima: c.ultima, estado
@@ -2387,14 +2313,11 @@ app.get('/painel', async (req, res) => {
     }
     const orfas = Object.keys(conv).filter(k => !k.startsWith('site-') && !usadas.has(k)).length;
     const sessoesSite = Object.keys(conv).filter(k => k.startsWith('site-')).length;
-    const MESES = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
-      'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
-    const link = (m, a, t) => `/painel?chave=${encodeURIComponent(chaveEsperada)}&mes=${m}&ano=${a}${t ? '&todos=1' : ''}`;
-    const mesAnt = mes === 1 ? 12 : mes - 1, anoAnt = mes === 1 ? ano - 1 : ano;
-    const mesProx = mes === 12 ? 1 : mes + 1, anoProx = mes === 12 ? ano + 1 : ano;
+    const brasil = new Date(Date.now() + (new Date().getTimezoneOffset() * 60000) + (-3 * 3600000));
     const DADOS = {
       leads, orfas, sessoesSite, projetosNoArquivoTodo,
-      periodo: todos ? 'Todo o histórico' : MESES[mes] + ' de ' + ano,
+      mesInicial: req.query.mes ? parseInt(req.query.mes) : brasil.getMonth() + 1,
+      anoInicial: req.query.ano ? parseInt(req.query.ano) : brasil.getFullYear(),
       geradoEm: agoraBrasil()
     };
     const html = `<!DOCTYPE html>
@@ -2412,6 +2335,7 @@ app.get('/painel', async (req, res) => {
     --roxo:#47166B; --on-ink:#FFFFFF; --serie:#7E48A2; --serie-laranja:#F15A29;
     --f1:#B98FD1; --f2:#9C6BBB; --f3:#7E48A2; --f4:#632C87; --f5:#47166B;
     --st-bom:#0CA30C; --st-fut:#FAB219; --st-ruim:#D03B3B; --st-nao:#6E6E6E;
+    --sobe:#0CA30C; --desce:#C0392B;
   }
   @media (prefers-color-scheme: dark) {
     :root:where(:not([data-theme="light"])) .viz-root {
@@ -2421,6 +2345,7 @@ app.get('/painel', async (req, res) => {
       --grid:#332B3D; --trilho:#26202F; --borda:rgba(255,255,255,0.10);
       --roxo:#D4B4E5; --on-ink:#1A1620; --serie:#A87FC4; --serie-laranja:#DD5F2C;
       --f1:#653F88; --f2:#8054A8; --f3:#9C6FC4; --f4:#B98FD1; --f5:#D4B4E5;
+      --sobe:#2EA96B; --desce:#E0655C;
     }
   }
   * { box-sizing:border-box; }
@@ -2434,14 +2359,12 @@ app.get('/painel', async (req, res) => {
   .fl { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   .fl + .fl { margin-top:9px; padding-top:9px; border-top:1px solid var(--grid); }
   .fl .rotf { font-size:12px; color:var(--muted); min-width:74px; }
-  .filtros a, .chip { text-decoration:none; color:var(--ink2); border:1px solid var(--borda);
-    background:none; border-radius:7px; padding:5px 11px; font-size:13px; cursor:pointer;
-    font-family:inherit; }
-  .filtros a:hover, .chip:hover { background:var(--trilho); }
-  .filtros a.on, .chip.on { background:var(--roxo); color:var(--on-ink);
-    border-color:var(--roxo); font-weight:600; }
-  .filtros .periodo { font-weight:600; color:var(--ink); margin:0 4px; }
-  .limpar { margin-left:auto; color:var(--roxo); font-weight:600; }
+  .chip { color:var(--ink2); border:1px solid var(--borda); background:none;
+    border-radius:7px; padding:5px 11px; font-size:13px; cursor:pointer; font-family:inherit; }
+  .chip:hover { background:var(--trilho); }
+  .chip.on { background:var(--roxo); color:var(--on-ink); border-color:var(--roxo); font-weight:600; }
+  .periodo { font-weight:600; color:var(--ink); margin:0 4px; min-width:150px; text-align:center; }
+  .dir { margin-left:auto; display:flex; gap:8px; }
   .card { background:var(--surface); border:1px solid var(--borda); border-radius:12px;
     padding:18px 20px; margin-bottom:14px; }
   .card h2 { font-size:14px; margin:0 0 2px; font-weight:600; color:var(--ink); }
@@ -2457,9 +2380,11 @@ app.get('/painel', async (req, res) => {
   .kpi .lab { font-size:12.5px; color:var(--muted); margin-bottom:6px; }
   .kpi .n { font-size:28px; font-weight:600; line-height:1.1; }
   .kpi .pe { font-size:12px; color:var(--ink2); margin-top:3px; }
+  .delta { font-size:12px; margin-top:3px; font-weight:600; }
+  .delta.up { color:var(--sobe); } .delta.down { color:var(--desce); } .delta.flat { color:var(--muted); font-weight:400; }
   .duas { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
   @media (max-width:760px) { .duas { grid-template-columns:1fr; } }
-  .linha { display:grid; grid-template-columns:minmax(150px,1.1fr) 3fr 42px;
+  .linha { display:grid; grid-template-columns:minmax(160px,1.2fr) 3fr 42px;
     align-items:center; gap:10px; margin-bottom:8px; }
   .clic { cursor:pointer; }
   .clic:hover .trilho { outline:2px solid var(--grid); outline-offset:2px; border-radius:5px; }
@@ -2473,8 +2398,7 @@ app.get('/painel', async (req, res) => {
   .val { text-align:right; font-variant-numeric:tabular-nums; font-size:14px;
     font-weight:600; color:var(--ink); }
   .alerta { border-left:3px solid var(--st-fut); background:var(--trilho);
-    border-radius:0 8px 8px 0; padding:12px 14px; font-size:13.5px; color:var(--ink2);
-    margin-bottom:14px; }
+    border-radius:0 8px 8px 0; padding:12px 14px; font-size:13.5px; color:var(--ink2); margin-bottom:14px; }
   .alerta b { color:var(--ink); }
   table { width:100%; border-collapse:collapse; font-size:12.5px; }
   th { text-align:left; font-weight:600; color:var(--ink2); border-bottom:1px solid var(--grid);
@@ -2484,160 +2408,171 @@ app.get('/painel', async (req, res) => {
   td.obs { color:var(--muted); max-width:230px; }
   .rodape { color:var(--muted); font-size:12px; text-align:center; padding:16px 0 0; }
   .rolar { overflow-x:auto; }
-  @media print {
-    body { background:#fff; }
-    .filtros .navmes, .rodape, .clic { cursor:auto; }
-    .navmes, .rodape { display:none; }
-    .card, .kpi { border:1px solid #ccc; break-inside:avoid; }
-  }
+  @media print { body{background:#fff;} .filtros,.rodape{display:none;} .card,.kpi{border:1px solid #ccc;break-inside:avoid;} }
 </style>
 </head><body class="viz-root" data-palette="#B98FD1,#9C6BBB,#7E48A2,#632C87,#47166B" data-mode="light">
 <div class="wrap">
   <h1>Painel de Leads da Internet</h1>
-  <div class="sub">Ginger Fragrance Design · ${escaparHtml(DADOS.periodo)} · gerado em ${escaparHtml(DADOS.geradoEm)}</div>
-
+  <div class="sub">Ginger Fragrance Design · gerado em ${escaparHtml(DADOS.geradoEm)}</div>
   <div class="filtros">
     <div class="fl navmes">
-      <a href="${link(mesAnt, anoAnt, false)}">← ${MESES[mesAnt]}</a>
-      <span class="periodo">${escaparHtml(DADOS.periodo)}</span>
-      <a href="${link(mesProx, anoProx, false)}">${MESES[mesProx]} →</a>
-      <a href="${link(mes, ano, false)}" class="${todos ? '' : 'on'}">Mês</a>
-      <a href="${link(mes, ano, true)}" class="${todos ? 'on' : ''}">Tudo</a>
+      <button class="chip" id="ant">←</button>
+      <span class="periodo" id="rotuloPeriodo"></span>
+      <button class="chip" id="prox">→</button>
+      <button class="chip" id="btMes">Mês</button>
+      <button class="chip" id="btTudo">Tudo</button>
+      <span class="dir">
+        <button class="chip" id="btCsv">Baixar CSV</button>
+        <button class="chip" id="limpar" hidden>Limpar filtros</button>
+      </span>
     </div>
-    <div class="fl"><span class="rotf">Origem</span><span id="f-origem"></span></div>
+    <div class="fl"><span class="rotf">Canal</span><span id="f-origem"></span></div>
     <div class="fl"><span class="rotf">Qualificação</span><span id="f-qual"></span></div>
-    <div class="fl"><span class="rotf">Estado</span><span id="f-estado"></span>
-      <button class="chip limpar" id="limpar" hidden>Limpar filtros</button></div>
+    <div class="fl"><span class="rotf">Estado</span><span id="f-estado"></span></div>
   </div>
-
   <div id="app"></div>
   <div class="rodape">Uso interno. Contém dados pessoais de leads. Clique nas barras para afunilar. Ctrl+P imprime ou salva em PDF.</div>
 </div>
 <script>
 const D = ${JSON.stringify(DADOS)};
 const F = { origem:null, qual:null, estado:null };
-const ROT_EST = { qualificado:'Qualificado', sem_resposta:'Sem resposta',
-  abandonou:'Parou de responder', em_conversa:'Em conversa', nao_abordado:'Não abordado' };
-const NOTA_EST = { sem_resposta:'abordado, nunca respondeu',
-  abandonou:'respondeu e sumiu, sem devolutiva', em_conversa:'ativo nas últimas 24h',
-  qualificado:'conversa concluída', nao_abordado:'ainda na fila' };
-const NOTA_QUAL = { BOM:'passou nos quatro critérios',
-  POTENCIAL_FUTURO:'sem CNPJ, volume baixo ou não informado',
-  RUIM:'sem projeto ou interesse real', NAO_LEAD:'fornecedor, cobrança, assunto interno' };
-const TOK = { BOM:'bom', POTENCIAL_FUTURO:'fut', RUIM:'ruim', NAO_LEAD:'nao' };
-function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,
-  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function pct(a,b){ return b ? (Math.round((a/b)*1000)/10).toString().replace('.',',')+'%' : '—'; }
-function filtrados(){ return D.leads.filter(l =>
-  (!F.origem || l.origem===F.origem) && (!F.qual || l.qual===F.qual) &&
-  (!F.estado || l.estado===F.estado)); }
-function corOrigem(o){ return o==='bot-site' ? 'var(--serie-laranja)'
-  : o==='bot-planilha' ? 'var(--serie)' : 'var(--muted)'; }
-function barra(o){
-  const p = o.max>0 ? Math.max(o.valor>0?1.5:0,(o.valor/o.max)*100) : 0;
-  return '<div class="linha '+(o.clic?'clic ':'')+(o.ativa?'ativa':'')+'"'+
-    (o.clic?' data-f="'+o.dim+'" data-v="'+esc(o.chave)+'"':'')+'>'+
-    '<div class="rot">'+(o.sw?'<span class="sw" style="background:var(--st-'+o.sw+')"></span>':'')+
-    esc(o.rot)+(o.nota?'<span class="nota">'+esc(o.nota)+'</span>':'')+'</div>'+
-    '<div class="trilho"><div class="marca" style="width:'+p+'%;background:'+o.cor+'"></div></div>'+
-    '<div class="val">'+o.valor+'</div></div>';
-}
-function chips(id, dim, vals, rotulo){
-  const el = document.getElementById(id);
-  el.innerHTML = vals.map(v => '<button class="chip '+(F[dim]===v?'on':'')+'" data-f="'+dim+
-    '" data-v="'+esc(v)+'">'+esc(rotulo?rotulo(v):v)+'</button>').join(' ');
-}
+let MES = D.mesInicial, ANO = D.anoInicial, TODOS = false;
+const MESES=['','Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+const ROT_EST={qualificado:'Qualificado',sem_resposta:'Sem resposta',abandonou:'Parou de responder',em_conversa:'Em conversa',nao_abordado:'Não abordado'};
+const NOTA_EST={sem_resposta:'abordado, nunca respondeu',abandonou:'respondeu e sumiu, sem devolutiva',em_conversa:'ativo nas últimas 24h',qualificado:'conversa concluída',nao_abordado:'ainda na fila'};
+const NOTA_QUAL={BOM:'passou nos quatro critérios',POTENCIAL_FUTURO:'sem CNPJ, volume baixo ou não informado',RUIM:'sem projeto ou interesse real',NAO_LEAD:'fornecedor, cobrança, assunto interno'};
+const TOK={BOM:'bom',POTENCIAL_FUTURO:'fut',RUIM:'ruim',NAO_LEAD:'nao'};
+// Rotulos legiveis. "bot-planilha" nao significa nada para quem assiste a
+// apresentacao; o nome do canal significa.
+const ROT_ORIGEM={'bot-planilha':'WhatsApp, abordagem ativa','bot-site':'Site e WhatsApp receptivo',
+ 'bot-instagram':'Instagram Direct','bot-facebook':'Messenger','sem origem':'Sem origem registrada'};
+const rotOrigem=o=>ROT_ORIGEM[o]||o;
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function pct(a,b){return b?(Math.round((a/b)*1000)/10).toString().replace('.',',')+'%':'—';}
+function doMes(m,a){return D.leads.filter(l=>l.mes===m&&l.ano===a);}
+function base(){return TODOS?D.leads:doMes(MES,ANO);}
+function aplicaFiltros(arr){return arr.filter(l=>(!F.origem||l.origem===F.origem)&&(!F.qual||l.qual===F.qual)&&(!F.estado||l.estado===F.estado));}
+// Canal e categoria nominal, nao tem ordem. Pintar cada barra de um tom
+// diferente do mesmo roxo faria o leitor procurar sentido numa diferenca que
+// nao existe, e a barra ja carrega o tamanho. Uma cor so; quem identifica e o
+// rotulo. Cinza fica reservado para ausencia de dado, que nao e um canal.
+function corOrigem(o){return o==='sem origem'?'var(--muted)':'var(--serie)';}
+function barra(o){const p=o.max>0?Math.max(o.valor>0?1.5:0,(o.valor/o.max)*100):0;
+ return '<div class="linha '+(o.clic?'clic ':'')+(o.ativa?'ativa':'')+'"'+(o.clic?' data-f="'+o.dim+'" data-v="'+esc(o.chave)+'"':'')+'>'+
+ '<div class="rot">'+(o.sw?'<span class="sw" style="background:var(--st-'+o.sw+')"></span>':'')+esc(o.rot)+
+ (o.nota?'<span class="nota">'+esc(o.nota)+'</span>':'')+'</div>'+
+ '<div class="trilho"><div class="marca" style="width:'+p+'%;background:'+o.cor+'"></div></div>'+
+ '<div class="val">'+o.valor+'</div></div>';}
+function chips(id,dim,vals,rot){document.getElementById(id).innerHTML=vals.map(v=>
+ '<button class="chip '+(F[dim]===v?'on':'')+'" data-f="'+dim+'" data-v="'+esc(v)+'">'+esc(rot?rot(v):v)+'</button>').join(' ');}
+// Comparacao com o mes anterior. Sem ela um numero sozinho nao diz se o
+// canal melhorou ou piorou, que e a primeira pergunta em qualquer reunião.
+function delta(atual,anterior){
+ if(TODOS) return '';
+ if(!anterior&&!atual) return '';
+ if(!anterior) return '<div class="delta up">novo, sem base no mês anterior</div>';
+ const d=atual-anterior;
+ if(d===0) return '<div class="delta flat">igual ao mês anterior</div>';
+ const cls=d>0?'up':'down';
+ return '<div class="delta '+cls+'">'+(d>0?'+':'')+d+' vs '+MESES[MES===1?12:MES-1]+'</div>';}
+function contas(arr){const n=e=>arr.filter(l=>l.estado===e).length,q=v=>arr.filter(l=>l.qual===v).length;
+ return {captados:arr.length,abordados:arr.filter(l=>l.estado!=='nao_abordado').length,
+ responderam:arr.filter(l=>l.recebidas>0).length,qualificados:arr.filter(l=>l.qual).length,
+ bom:q('BOM'),futuro:q('POTENCIAL_FUTURO'),ruim:q('RUIM'),naoLead:q('NAO_LEAD'),
+ projetos:arr.filter(l=>l.projeto).length,n};}
+function csv(arr){
+ const cab=['Entrada','Nome','Empresa','Canal','Estado','Qualificacao','Mensagens','Recebidas','Projeto','Motivo'];
+ const esc2=s=>'"'+String(s==null?'':s).replace(/"/g,'""')+'"';
+ const linhas=arr.map(l=>[l.data,l.nome,l.empresa,rotOrigem(l.origem),ROT_EST[l.estado]||l.estado,l.qual||'',l.msgs,l.recebidas,l.projeto||'',l.motivo].map(esc2).join(';'));
+ const BOM=String.fromCharCode(65279), CRLF=String.fromCharCode(13,10);
+ return BOM+[cab.map(esc2).join(';')].concat(linhas).join(CRLF);}
 function render(){
-  const L = filtrados();
-  const n = e => L.filter(l=>l.estado===e).length;
-  const q = v => L.filter(l=>l.qual===v).length;
-  const captados=L.length, abordados=L.filter(l=>l.estado!=='nao_abordado').length;
-  const responderam=L.filter(l=>l.recebidas>0).length;
-  const qualificados=L.filter(l=>l.qual).length;
-  const bom=q('BOM'), futuro=q('POTENCIAL_FUTURO'), ruim=q('RUIM'), naoLead=q('NAO_LEAD');
-  const projetos=L.filter(l=>l.projeto).length;
-  const porOrigem={}; L.forEach(l=>{ porOrigem[l.origem]=(porOrigem[l.origem]||0)+1; });
-  const origens=Object.entries(porOrigem).sort((a,b)=>b[1]-a[1]);
-  const maxOrig=Math.max(...origens.map(o=>o[1]),1);
-  const maxQual=Math.max(bom,futuro,ruim,naoLead,1);
-  const maxEst=Math.max(n('sem_resposta'),n('abandonou'),n('em_conversa'),n('qualificado'),n('nao_abordado'),1);
-  const etapas=[['Leads captados',captados],['Abordados pelo agente',abordados],
-    ['Responderam',responderam],['Qualificados como BOM',bom],['Projeto aberto',projetos]];
-  const funil=etapas.map((e,i)=>{
-    const p=captados>0?Math.max(e[1]>0?1.5:0,(e[1]/captados)*100):0;
-    let nota=i===0?'':(etapas[i-1][1]>0?pct(e[1],etapas[i-1][1])+' da etapa anterior':'');
-    if(i===4) nota=(nota?nota+' · ':'')+'anotado à mão pelo comercial';
-    return '<div class="linha"><div class="rot">'+esc(e[0])+
-      (nota?'<span class="nota">'+esc(nota)+'</span>':'')+'</div>'+
-      '<div class="trilho"><div class="marca" style="width:'+p+'%;background:var(--f'+(i+1)+')"></div></div>'+
-      '<div class="val">'+e[1]+'</div></div>';
-  }).join('');
-  // Honestidade sobre a ultima etapa: zero projeto pode significar duas coisas
-  // completamente diferentes, e num slide elas nao podem virar o mesmo numero.
-  const avisoProjeto = D.projetosNoArquivoTodo===0
-    ? '<div class="alerta"><b>A etapa "Projeto aberto" ainda não tem dado.</b> Esse número não vem do Otimizah, ele vem da coluna PROJETO da planilha, preenchida à mão por quem abre o projeto. Nenhuma linha do arquivo inteiro está preenchida, então este zero significa "ninguém anotou ainda", e não "nenhum projeto foi aberto". Enquanto for assim, não leve essa linha para apresentação.</div>'
-    : (projetos===0 && bom>0
-      ? '<div class="alerta"><b>Nenhum projeto anotado neste recorte</b>, embora existam leads BOM. Como o campo é preenchido à mão, pode ser ausência de projeto ou ausência de anotação. Vale confirmar com o comercial antes de apresentar.</div>' : '');
-  const tab=L.slice().sort((a,b)=>(b.ultima||0)-(a.ultima||0)).map(l=>'<tr>'+
-    '<td class="num">'+esc(l.data)+'</td><td>'+esc(l.nome)+'</td><td>'+esc(l.empresa)+'</td>'+
-    '<td>'+esc(l.origem)+'</td><td>'+esc(ROT_EST[l.estado]||l.estado)+'</td>'+
-    '<td>'+(l.qual?'<span class="sw" style="background:var(--st-'+(TOK[l.qual]||'nao')+')"></span>'+esc(l.qual):'—')+'</td>'+
-    '<td class="num">'+l.msgs+'</td><td class="num">'+l.recebidas+'</td>'+
-    '<td>'+(esc(l.projeto)||'—')+'</td><td class="obs">'+esc(l.motivo)+'</td></tr>').join('');
-  const ativo = F.origem||F.qual||F.estado;
-  document.getElementById('app').innerHTML =
-  '<div class="card"><div class="heroi"><div class="n">'+bom+'</div><div>'+
-    '<div class="t1">leads qualificados como BOM</div>'+
-    '<div class="t2">'+esc(D.periodo)+(ativo?' · recorte filtrado':'')+'</div></div></div>'+
-    '<p class="heroi-sub">De '+captados+' leads captados, '+responderam+
-    ' responderam ao agente e '+projetos+' viraram projeto aberto.</p></div>'+
-  '<div class="kpis">'+
-    '<div class="kpi"><div class="lab">Leads captados</div><div class="n">'+captados+'</div></div>'+
-    '<div class="kpi"><div class="lab">Abordados</div><div class="n">'+abordados+'</div><div class="pe">'+pct(abordados,captados)+' dos captados</div></div>'+
-    '<div class="kpi"><div class="lab">Responderam</div><div class="n">'+responderam+'</div><div class="pe">'+pct(responderam,abordados)+' dos abordados</div></div>'+
-    '<div class="kpi"><div class="lab">Qualificados</div><div class="n">'+qualificados+'</div><div class="pe">'+pct(qualificados,captados)+' dos captados</div></div>'+
-    '<div class="kpi"><div class="lab">Projetos anotados</div><div class="n">'+projetos+'</div><div class="pe">'+pct(projetos,bom)+' dos BOM</div></div>'+
+ const L=aplicaFiltros(base());
+ const C=contas(L);
+ // Mes anterior sob os MESMOS filtros, para a comparacao ser honesta.
+ const mAnt=MES===1?12:MES-1, aAnt=MES===1?ANO-1:ANO;
+ const Cant=contas(aplicaFiltros(doMes(mAnt,aAnt)));
+ const periodo=TODOS?'Todo o histórico':MESES[MES]+' de '+ANO;
+ document.getElementById('rotuloPeriodo').textContent=periodo;
+ document.getElementById('btMes').className='chip '+(TODOS?'':'on');
+ document.getElementById('btTudo').className='chip '+(TODOS?'on':'');
+ const porOrigem={}; L.forEach(l=>{porOrigem[l.origem]=(porOrigem[l.origem]||0)+1;});
+ const origens=Object.entries(porOrigem).sort((a,b)=>b[1]-a[1]);
+ const maxOrig=Math.max(...origens.map(o=>o[1]),1);
+ const maxQual=Math.max(C.bom,C.futuro,C.ruim,C.naoLead,1);
+ const maxEst=Math.max(C.n('sem_resposta'),C.n('abandonou'),C.n('em_conversa'),C.n('qualificado'),C.n('nao_abordado'),1);
+ const etapas=[['Leads captados',C.captados],['Abordados pelo agente',C.abordados],['Responderam',C.responderam],['Qualificados como BOM',C.bom],['Projeto aberto',C.projetos]];
+ const funil=etapas.map((e,i)=>{const p=C.captados>0?Math.max(e[1]>0?1.5:0,(e[1]/C.captados)*100):0;
+  let nota=i===0?'':(etapas[i-1][1]>0?pct(e[1],etapas[i-1][1])+' da etapa anterior':'');
+  if(i===4) nota=(nota?nota+' · ':'')+'anotado à mão pelo comercial';
+  return '<div class="linha"><div class="rot">'+esc(e[0])+(nota?'<span class="nota">'+esc(nota)+'</span>':'')+'</div>'+
+  '<div class="trilho"><div class="marca" style="width:'+p+'%;background:var(--f'+(i+1)+')"></div></div><div class="val">'+e[1]+'</div></div>';}).join('');
+ const avisoProj = D.projetosNoArquivoTodo===0
+  ? '<div class="alerta"><b>A etapa "Projeto aberto" ainda não tem dado.</b> Esse número não vem do Otimizah, vem da coluna PROJETO da planilha, preenchida à mão por quem abre o projeto. Nenhuma linha do arquivo inteiro está preenchida, então este zero significa "ninguém anotou ainda", e não "nenhum projeto foi aberto". Enquanto for assim, não leve essa linha para apresentação.</div>'
+  : (C.projetos===0&&C.bom>0?'<div class="alerta"><b>Nenhum projeto anotado neste recorte</b>, embora existam leads BOM. Como o campo é preenchido à mão, pode ser ausência de projeto ou ausência de anotação. Confirme com o comercial antes de apresentar.</div>':'');
+ const tab=L.slice().sort((a,b)=>(b.ultima||0)-(a.ultima||0)).map(l=>'<tr>'+
+  '<td class="num">'+esc(l.data)+'</td><td>'+esc(l.nome)+'</td><td>'+esc(l.empresa)+'</td>'+
+  '<td>'+esc(rotOrigem(l.origem))+'</td><td>'+esc(ROT_EST[l.estado]||l.estado)+'</td>'+
+  '<td>'+(l.qual?'<span class="sw" style="background:var(--st-'+(TOK[l.qual]||'nao')+')"></span>'+esc(l.qual):'—')+'</td>'+
+  '<td class="num">'+l.msgs+'</td><td class="num">'+l.recebidas+'</td>'+
+  '<td>'+(esc(l.projeto)||'—')+'</td><td class="obs">'+esc(l.motivo)+'</td></tr>').join('');
+ const ativo=F.origem||F.qual||F.estado;
+ document.getElementById('app').innerHTML=
+ '<div class="card"><div class="heroi"><div class="n">'+C.bom+'</div><div>'+
+  '<div class="t1">leads qualificados como BOM</div><div class="t2">'+esc(periodo)+(ativo?' · recorte filtrado':'')+'</div></div></div>'+
+  '<p class="heroi-sub">De '+C.captados+' leads captados, '+C.responderam+' responderam ao agente e '+C.projetos+' viraram projeto aberto.</p></div>'+
+ '<div class="kpis">'+
+  '<div class="kpi"><div class="lab">Leads captados</div><div class="n">'+C.captados+'</div>'+delta(C.captados,Cant.captados)+'</div>'+
+  '<div class="kpi"><div class="lab">Abordados</div><div class="n">'+C.abordados+'</div><div class="pe">'+pct(C.abordados,C.captados)+' dos captados</div></div>'+
+  '<div class="kpi"><div class="lab">Responderam</div><div class="n">'+C.responderam+'</div><div class="pe">'+pct(C.responderam,C.abordados)+' dos abordados</div>'+delta(C.responderam,Cant.responderam)+'</div>'+
+  '<div class="kpi"><div class="lab">Qualificados BOM</div><div class="n">'+C.bom+'</div><div class="pe">'+pct(C.bom,C.qualificados)+' dos qualificados</div>'+delta(C.bom,Cant.bom)+'</div>'+
+  '<div class="kpi"><div class="lab">Projetos anotados</div><div class="n">'+C.projetos+'</div><div class="pe">'+pct(C.projetos,C.bom)+' dos BOM</div>'+delta(C.projetos,Cant.projetos)+'</div>'+
+ '</div>'+
+ '<div class="card"><h2>Funil, do lead captado ao projeto aberto</h2><p class="leg">Números absolutos. A nota abaixo do rótulo é a conversão em relação à etapa imediatamente anterior.</p>'+funil+'</div>'+
+ avisoProj+
+ '<div class="duas">'+
+  '<div class="card"><h2>Como o agente classificou</h2><p class="leg">Clique numa barra para filtrar a página inteira por ela.</p>'+
+  barra({rot:'BOM',valor:C.bom,max:maxQual,cor:'var(--serie)',sw:'bom',nota:NOTA_QUAL.BOM,clic:1,dim:'qual',chave:'BOM',ativa:F.qual==='BOM'})+
+  barra({rot:'POTENCIAL_FUTURO',valor:C.futuro,max:maxQual,cor:'var(--serie)',sw:'fut',nota:NOTA_QUAL.POTENCIAL_FUTURO,clic:1,dim:'qual',chave:'POTENCIAL_FUTURO',ativa:F.qual==='POTENCIAL_FUTURO'})+
+  barra({rot:'RUIM',valor:C.ruim,max:maxQual,cor:'var(--serie)',sw:'ruim',nota:NOTA_QUAL.RUIM,clic:1,dim:'qual',chave:'RUIM',ativa:F.qual==='RUIM'})+
+  barra({rot:'NAO_LEAD',valor:C.naoLead,max:maxQual,cor:'var(--serie)',sw:'nao',nota:NOTA_QUAL.NAO_LEAD,clic:1,dim:'qual',chave:'NAO_LEAD',ativa:F.qual==='NAO_LEAD'})+
   '</div>'+
-  '<div class="card"><h2>Funil, do lead captado ao projeto aberto</h2>'+
-    '<p class="leg">Números absolutos. A nota abaixo do rótulo é a conversão em relação à etapa imediatamente anterior.</p>'+funil+'</div>'+
-  avisoProjeto+
-  '<div class="duas">'+
-    '<div class="card"><h2>Como o agente classificou</h2>'+
-    '<p class="leg">Clique numa barra para filtrar a página inteira por ela.</p>'+
-    barra({rot:'BOM',valor:bom,max:maxQual,cor:'var(--serie)',sw:'bom',nota:NOTA_QUAL.BOM,clic:1,dim:'qual',chave:'BOM',ativa:F.qual==='BOM'})+
-    barra({rot:'POTENCIAL_FUTURO',valor:futuro,max:maxQual,cor:'var(--serie)',sw:'fut',nota:NOTA_QUAL.POTENCIAL_FUTURO,clic:1,dim:'qual',chave:'POTENCIAL_FUTURO',ativa:F.qual==='POTENCIAL_FUTURO'})+
-    barra({rot:'RUIM',valor:ruim,max:maxQual,cor:'var(--serie)',sw:'ruim',nota:NOTA_QUAL.RUIM,clic:1,dim:'qual',chave:'RUIM',ativa:F.qual==='RUIM'})+
-    barra({rot:'NAO_LEAD',valor:naoLead,max:maxQual,cor:'var(--serie)',sw:'nao',nota:NOTA_QUAL.NAO_LEAD,clic:1,dim:'qual',chave:'NAO_LEAD',ativa:F.qual==='NAO_LEAD'})+
-    '</div>'+
-    '<div class="card"><h2>Onde o lead parou</h2>'+
-    '<p class="leg">Estados exclusivos. "Sem resposta" mede o template de abordagem. "Parou de responder" mede o agente perdendo a pessoa no meio da conversa.</p>'+
-    ['sem_resposta','abandonou','em_conversa','qualificado','nao_abordado'].map(e=>
-      barra({rot:ROT_EST[e],valor:n(e),max:maxEst,cor:'var(--serie)',nota:NOTA_EST[e],clic:1,dim:'estado',chave:e,ativa:F.estado===e})).join('')+
-    '</div></div>'+
-  '<div class="card"><h2>Origem dos leads</h2>'+
-    '<p class="leg">bot-planilha é abordagem ativa a partir do formulário. bot-site é receptivo, quem chegou pelo chat ou pelo WhatsApp.</p>'+
-    (origens.map(o=>barra({rot:o[0],valor:o[1],max:maxOrig,cor:corOrigem(o[0]),clic:1,dim:'origem',chave:o[0],ativa:F.origem===o[0]})).join('')
-      || '<p class="leg">Sem leads neste recorte.</p>')+'</div>'+
-  (D.orfas ? '<div class="alerta"><b>'+D.orfas+' conversa'+(D.orfas>1?'s':'')+
-    ' de WhatsApp sem linha na planilha.</b> São pessoas que chamaram o número direto, sem nunca preencher o formulário. Elas conversam com o agente e podem até acionar o comercial por e-mail, mas não têm linha na planilha, então não aparecem em nenhum número desta página. O painel está subestimando o canal receptivo enquanto isso não for corrigido.'+
-    (D.sessoesSite?' Além delas, '+D.sessoesSite+' sessão'+(D.sessoesSite>1?'ões':'')+' do chat do site, que por natureza não têm telefone.':'')+'</div>' : '')+
-  '<div class="card"><h2>Tabela completa</h2>'+
-    '<p class="leg">'+L.length+' lead'+(L.length===1?'':'s')+' neste recorte. Nenhum número desta página depende de passar o mouse em nada, tudo está aqui.</p>'+
-    '<div class="rolar"><table><thead><tr><th>Entrada</th><th>Nome</th><th>Empresa</th><th>Origem</th>'+
-    '<th>Estado</th><th>Qualificação</th><th>Msgs</th><th>Recebidas</th><th>Projeto</th><th>Motivo</th></tr></thead>'+
-    '<tbody>'+(tab||'<tr><td colspan="10">Nenhum lead neste recorte.</td></tr>')+'</tbody></table></div></div>';
-  const origensTodas=[...new Set(D.leads.map(l=>l.origem))].sort();
-  chips('f-origem','origem',origensTodas);
-  chips('f-qual','qual',['BOM','POTENCIAL_FUTURO','RUIM','NAO_LEAD']);
-  chips('f-estado','estado',['sem_resposta','abandonou','em_conversa','qualificado','nao_abordado'],v=>ROT_EST[v]);
-  document.getElementById('limpar').hidden = !ativo;
+  '<div class="card"><h2>Onde o lead parou</h2><p class="leg">Estados exclusivos. "Sem resposta" mede o template de abordagem. "Parou de responder" mede o agente perdendo a pessoa no meio da conversa.</p>'+
+  ['sem_resposta','abandonou','em_conversa','qualificado','nao_abordado'].map(e=>
+   barra({rot:ROT_EST[e],valor:C.n(e),max:maxEst,cor:'var(--serie)',nota:NOTA_EST[e],clic:1,dim:'estado',chave:e,ativa:F.estado===e})).join('')+
+  '</div></div>'+
+ '<div class="card"><h2>Canais</h2><p class="leg">De onde o lead entrou. Clique para ver o funil de um canal só.</p>'+
+  (origens.map(o=>barra({rot:rotOrigem(o[0]),valor:o[1],max:maxOrig,cor:corOrigem(o[0]),clic:1,dim:'origem',chave:o[0],ativa:F.origem===o[0]})).join('')
+   ||'<p class="leg">Sem leads neste recorte.</p>')+'</div>'+
+ (D.orfas?'<div class="alerta"><b>'+D.orfas+' conversa'+(D.orfas>1?'s':'')+' de WhatsApp sem linha na planilha.</b> São contatos anteriores à correção que criou linha automaticamente. Conversaram com o agente mas não têm linha, então não aparecem em nenhum número desta página. Daqui para frente todo contato novo já nasce com linha.'+
+  (D.sessoesSite?' Além delas, '+D.sessoesSite+' sessão'+(D.sessoesSite>1?'ões':'')+' do chat do site, que por natureza não têm telefone.':'')+'</div>':'')+
+ '<div class="card"><h2>Tabela completa</h2><p class="leg">'+L.length+' lead'+(L.length===1?'':'s')+' neste recorte. Nenhum número desta página depende de passar o mouse em nada, tudo está aqui.</p>'+
+  '<div class="rolar"><table><thead><tr><th>Entrada</th><th>Nome</th><th>Empresa</th><th>Canal</th><th>Estado</th><th>Qualificação</th><th>Msgs</th><th>Recebidas</th><th>Projeto</th><th>Motivo</th></tr></thead>'+
+  '<tbody>'+(tab||'<tr><td colspan="10">Nenhum lead neste recorte.</td></tr>')+'</tbody></table></div></div>';
+ const origensTodas=[...new Set(D.leads.map(l=>l.origem))].sort();
+ chips('f-origem','origem',origensTodas,rotOrigem);
+ chips('f-qual','qual',['BOM','POTENCIAL_FUTURO','RUIM','NAO_LEAD']);
+ chips('f-estado','estado',['sem_resposta','abandonou','em_conversa','qualificado','nao_abordado'],v=>ROT_EST[v]);
+ document.getElementById('limpar').hidden=!ativo;
 }
-// Um clique numa barra ou num chip mexe no MESMO filtro. A linha de filtros
-// acima e a fonte da verdade, e a pagina inteira re-renderiza contra o recorte.
-document.addEventListener('click', ev => {
-  const alvo = ev.target.closest('[data-f]');
-  if (alvo) { const d=alvo.dataset.f, v=alvo.dataset.v; F[d] = (F[d]===v ? null : v); render(); return; }
-  if (ev.target.id === 'limpar') { F.origem=F.qual=F.estado=null; render(); }
+document.addEventListener('click',ev=>{
+ const alvo=ev.target.closest('[data-f]');
+ if(alvo){const d=alvo.dataset.f,v=alvo.dataset.v;F[d]=(F[d]===v?null:v);render();return;}
+ const id=ev.target.id;
+ if(id==='limpar'){F.origem=F.qual=F.estado=null;render();}
+ // Troca de mes sem recarregar: os dados de todos os meses ja estao aqui.
+ else if(id==='ant'){TODOS=false;if(MES===1){MES=12;ANO--;}else MES--;render();}
+ else if(id==='prox'){TODOS=false;if(MES===12){MES=1;ANO++;}else MES++;render();}
+ else if(id==='btMes'){TODOS=false;render();}
+ else if(id==='btTudo'){TODOS=true;render();}
+ else if(id==='btCsv'){
+  const arr=aplicaFiltros(base());
+  const b=new Blob([csv(arr)],{type:'text/csv;charset=utf-8;'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(b);
+  a.download='leads-ginger-'+(TODOS?'historico':ANO+'-'+String(MES).padStart(2,'0'))+'.csv';
+  a.click(); URL.revokeObjectURL(a.href);
+ }
 });
 render();
 </script>
@@ -2716,10 +2651,14 @@ app.get('/saude', async (req, res) => {
     add('Instagram', false, 'não configurado', false);
   }
   // Facebook Messenger
-  if (FB_TOKEN && FB_PAGE_ID) {
-    const r = await chamarFacebook(`/${FB_PAGE_ID}?fields=id,name`);
-    add('Messenger, token da Página', r.ok, r.ok ? `página ${r.data.name}` :
+  if (FB_TOKEN) {
+    const r = await chamarFacebook('/me?fields=id,name');
+    add('Messenger, token da Página', r.ok, r.ok ? `página ${r.data.name} (${r.data.id})` :
       ((r.data.error && r.data.error.message) || 'rejeitado').substring(0, 140));
+    if (r.ok && FB_PAGE_ID && String(r.data.id) !== String(FB_PAGE_ID)) {
+      add('Messenger, ID configurado', false,
+        `FACEBOOK_PAGE_ID é ${FB_PAGE_ID} mas o token é da página ${r.data.id}`, false);
+    }
   } else {
     add('Messenger', false, 'não configurado', false);
   }

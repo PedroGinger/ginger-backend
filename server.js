@@ -2650,6 +2650,50 @@ render();
 // Esta rota e de mao unica e roda uma vez. Por padrao ela apenas MOSTRA o que
 // faria. Só muda a planilha com &aplicar=1.
 const CLASSIFICACOES_VALIDAS = ['BOM', 'POTENCIAL_FUTURO', 'RUIM', 'NAO_LEAD'];
+// ══════════════════════════════════════════════════════════════
+// ── ROTA: DIAGNÓSTICO DAS LINHAS
+// ══════════════════════════════════════════════════════════════
+// Chegaram e-mails de lead BOM que o painel nao conta. Ou a classificacao foi
+// gravada em outra coluna, ou nao foi gravada em lugar nenhum. Estas duas
+// hipoteses pedem tratamentos opostos, e nao da para escolher no escuro.
+// Esta rota mostra o conteudo cru das colunas que importam, sem interpretar.
+app.get('/diagnostico-linhas', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const busca = (req.query.busca || '').trim().toLowerCase();
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A:O`
+    });
+    const rows = r.data.values || [];
+    const corta = v => { const s = String(v == null ? '' : v); return s.length > 90 ? s.substring(0, 90) + '…' : s; };
+    const linhas = [];
+    for (let i = 1; i < rows.length; i++) {
+      const l = rows[i] || [];
+      const alvo = `${l[1] || ''} ${l[3] || ''} ${l[4] || ''}`.toLowerCase();
+      if (busca && !alvo.includes(busca)) continue;
+      linhas.push({
+        linha: i + 1,
+        A_data: corta(l[0]), B_nome: corta(l[1]), D_telefone: corta(l[3]), E_empresa: corta(l[4]),
+        H_cnpj: corta(l[7]), I_status: corta(l[8]), J_origem: corta(l[9]),
+        K_qualificacao: corta(l[10]), L_motivo: corta(l[11]),
+        M_projeto: corta(l[12]), O_id_canal: corta(l[14])
+      });
+    }
+    const semNada = linhas.filter(x => !x.I_status && !x.K_qualificacao).length;
+    res.json({
+      totalDeLinhas: rows.length - 1,
+      mostrando: linhas.length,
+      semStatusEsemQualificacao: semNada,
+      dica: 'use ?busca=maycon para filtrar por nome, telefone ou empresa',
+      linhas: linhas.slice(-80)
+    });
+  } catch(e) {
+    console.error('Erro no diagnóstico de linhas:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
 app.get('/migrar-qualificacao', async (req, res) => {
   if (!exigeChave(req, res)) return;
   const aplicar = req.query.aplicar === '1';

@@ -25,6 +25,43 @@ const WABA_ID = '4379210335742127';
 // Template aprovado para abordagem ativa (lead frio, fora da janela de 24h)
 const TEMPLATE_ABORDAGEM = 'abordagem_lead_ginger';
 const TEMPLATE_IDIOMA = 'pt_BR';
+// ══════════════════════════════════════════════════════════════
+// ── INSTAGRAM DIRECT
+// ══════════════════════════════════════════════════════════════
+// Variaveis necessarias no Render:
+//   INSTAGRAM_TOKEN    → token de acesso da conta profissional do Instagram
+//   INSTAGRAM_USER_ID  → ID da conta profissional (o destinatario do POST)
+//   META_VERIFY_TOKEN  → opcional. Se ausente, reusa WHATSAPP_VERIFY_TOKEN
+//
+// Nao precisa de App Review: a documentacao da Meta dispensa a revisao quando
+// o app manda e recebe mensagens da propria conta ou pagina do desenvolvedor.
+// Janela de resposta livre de 24h, igual ao WhatsApp. Fora dela existe a
+// etiqueta de agente humano, que nao esta implementada aqui de proposito,
+// porque ela e para atendimento humano, nao para robo.
+const IG_TOKEN = process.env.INSTAGRAM_TOKEN;
+const IG_USER_ID = process.env.INSTAGRAM_USER_ID;
+const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || process.env.WHATSAPP_VERIFY_TOKEN;
+// Prefixo da chave de conversa e do ID_CANAL. Mantem o identificador do
+// Instagram longe de qualquer codigo que espere telefone.
+const IG_PREFIXO = 'ig:';
+function chaveInstagram(igsid) {
+  return IG_PREFIXO + String(igsid || '').replace(/\D/g, '');
+}
+// Chave usada para agrupar conversas na inbox e no painel. Numero de WhatsApp
+// vira chave canonica; Instagram e chat do site ja chegam com prefixo proprio
+// e NAO podem passar por chaveNumero, que arrancaria o prefixo.
+function chaveConversa(bruto) {
+  const s = String(bruto || '').trim();
+  if (!s) return '';
+  if (s.startsWith('site-') || s.startsWith(IG_PREFIXO)) return s;
+  return chaveNumero(s) || s;
+}
+function canalDaChave(chave) {
+  const s = String(chave || '');
+  if (s.startsWith(IG_PREFIXO)) return 'Instagram';
+  if (s.startsWith('site-')) return 'Chat do site';
+  return 'WhatsApp';
+}
 function urlMensagens() {
   return `https://graph.facebook.com/${GRAPH_VERSION}/${WA_PHONE_ID}/messages`;
 }
@@ -55,14 +92,23 @@ const SHEET_CONVERSAS = 'Conversas';
 //   L MOTIVO        <- justificativa em uma linha, escrito pelo bot
 //   M PROJETO       <- numero do projeto no Otimizah, preenchido pelo comercial
 //   N RESPONSAVEL   <- Juliana ou Jennifer, preenchido pelo comercial
+//   O ID_CANAL      <- identificador do contato no canal, escrito pelo bot
 //
 // A coluna M e a unica realmente obrigatoria para humano. Sem ela a planilha
 // de leads e a base de projetos ficam desconectadas e nao existe como medir
 // retorno de abertura de projetos.
+//
+// A coluna O existe porque nem todo canal tem telefone. No Instagram a Meta
+// entrega um identificador proprio da conta (IGSID), nao um numero. Sem um
+// lugar para guardar esse ID, o lead de Instagram nunca encontra a propria
+// linha e fica invisivel em toda metrica. Para WhatsApp ela guarda a chave
+// canonica do numero, o que torna a busca independente do nono digito.
 const CABECALHO_PADRAO = [
   'DATA', 'NOME', 'EMAIL', 'TELEFONE', 'EMPRESA', 'CIDADE', 'FATURAMENTO',
-  'CNPJ', 'STATUS', 'ORIGEM', 'QUALIFICACAO', 'MOTIVO', 'PROJETO', 'RESPONSAVEL'
+  'CNPJ', 'STATUS', 'ORIGEM', 'QUALIFICACAO', 'MOTIVO', 'PROJETO', 'RESPONSAVEL',
+  'ID_CANAL'
 ];
+const COL_ID_CANAL = 14; // indice zero-based da coluna O
 let sheetsClient = null;
 async function getSheetsClient() {
   if (sheetsClient) return sheetsClient;
@@ -134,6 +180,15 @@ async function getConversa(numero) {
 async function saveConversa(numero, messages) {
   await redis('SET', `conversa:${chaveNumero(numero)}`, JSON.stringify(messages), 'EX', 86400);
 }
+// Mesmas funcoes, com a chave JA canonica. O Instagram usa estas.
+async function getConversaChave(chave) {
+  const data = await redis('GET', `conversa:${chave}`);
+  if (!data) return null;
+  try { return JSON.parse(data); } catch (e) { return null; }
+}
+async function saveConversaChave(chave, messages) {
+  await redis('SET', `conversa:${chave}`, JSON.stringify(messages), 'EX', 86400);
+}
 async function isNumeroAbordado(numero) {
   const result = await redis('SISMEMBER', 'numeros_abordados', chaveNumero(numero));
   return result === 1;
@@ -173,6 +228,16 @@ async function getLeadPlanilha(numero) {
 }
 async function setLeadPlanilha(numero, rowIndex) {
   await redis('HSET', 'leads_planilha', chaveNumero(numero), rowIndex.toString());
+}
+// Versoes que recebem a chave JA canonica. Necessarias porque a chave do
+// Instagram ("ig:178...") nao e telefone: passar ela por chaveNumero
+// arrancaria o prefixo e inventaria um numero brasileiro inexistente.
+async function getLinhaCache(chave) {
+  const r = await redis('HGET', 'leads_planilha', chave);
+  return r ? parseInt(r) : null;
+}
+async function setLinhaCache(chave, rowIndex) {
+  await redis('HSET', 'leads_planilha', chave, String(rowIndex));
 }
 // ══════════════════════════════════════════════════════════════
 // ── TRAVAS DE SEGURANÇA
@@ -683,7 +748,7 @@ async function buscarLinhaPorTelefone(numero) {
     if (!sheets) return null;
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A:N`
+      range: `${SHEET_NAME}!A:O`
     });
     const rows = res.data.values;
     if (!rows) return null;
@@ -751,6 +816,131 @@ async function atualizarQualificacao(rowIndex, classificacao, motivo) {
     console.log(`Planilha atualizada (qualificação): linha ${rowIndex} = "${classificacao}"`);
   } catch(e) {
     console.error('Erro ao atualizar qualificação:', e.message);
+  }
+}
+// ── COLUNA O: ID DO CONTATO NO CANAL
+// Guarda a chave canonica do WhatsApp ou o "ig:<IGSID>" do Instagram, para
+// que a linha continue localizavel mesmo se o Redis perder o mapeamento.
+async function buscarLinhaPorIdCanal(idCanal) {
+  if (!idCanal) return null;
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return null;
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!A:O`
+    });
+    const rows = res.data.values || [];
+    for (let i = 1; i < rows.length; i++) {
+      if ((rows[i][COL_ID_CANAL] || '').trim() === idCanal) return i + 1;
+    }
+    return null;
+  } catch(e) {
+    console.error('Erro ao buscar linha por ID de canal:', e.message);
+    return null;
+  }
+}
+// ══════════════════════════════════════════════════════════════
+// ── CRIAR LINHA PARA CONTATO QUE NAO ESTA NA PLANILHA
+// ══════════════════════════════════════════════════════════════
+// Antes desta funcao, o bot so carimbava a planilha quando encontrava a linha
+// do lead pelo telefone. Quem chamava o WhatsApp direto, sem nunca preencher
+// o formulario, conversava, era qualificado, disparava e-mail para o comercial
+// e NAO ENTRAVA em metrica nenhuma. No Instagram seria pior ainda, porque ali
+// nao existe telefone e NENHUM contato acharia linha.
+// Agora, quando nao ha linha, o bot cria uma.
+async function criarLinhaLead(dados) {
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return null;
+    const linha = [
+      dados.data || agoraBrasil(),
+      dados.nome || '', dados.email || '', dados.telefone || '',
+      dados.empresa || '', dados.cidade || '', dados.faturamento || '', dados.cnpj || '',
+      dados.status || 'em atendimento', dados.origem || '', '', '', '', '',
+      dados.idCanal || ''
+    ];
+    const r = await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!A:O`,
+      valueInputOption: 'RAW',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: [linha] }
+    });
+    // A API devolve o intervalo onde gravou, por exemplo "Página1!A48:O48".
+    const faixa = r.data && r.data.updates && r.data.updates.updatedRange;
+    const m = faixa && faixa.match(/![A-Z]+(\d+)/);
+    const rowIndex = m ? parseInt(m[1]) : null;
+    console.log(`Linha criada na planilha para ${dados.idCanal || dados.telefone}: linha ${rowIndex}`);
+    return rowIndex;
+  } catch(e) {
+    console.error('Erro ao criar linha do lead:', e.message);
+    return null;
+  }
+}
+// Localiza a linha do contato e, se nao existir, cria. Devolve o indice.
+// canal: 'whatsapp' ou 'instagram'. Usado tambem para decidir a origem.
+async function garantirLinhaDoContato({ idCanal, telefone, nome, origem }) {
+  let rowIndex = await getLinhaCache(idCanal);
+  if (rowIndex) return rowIndex;
+  if (telefone) {
+    rowIndex = await buscarLinhaPorTelefone(telefone);
+    if (rowIndex) {
+      await setLinhaCache(idCanal, rowIndex);
+      // Carimba o ID do canal na linha antiga, para nao depender do Redis.
+      await atualizarIdCanal(rowIndex, idCanal);
+      return rowIndex;
+    }
+  }
+  rowIndex = await buscarLinhaPorIdCanal(idCanal);
+  if (rowIndex) {
+    await setLinhaCache(idCanal, rowIndex);
+    return rowIndex;
+  }
+  rowIndex = await criarLinhaLead({
+    nome: nome || '', telefone: telefone || '', origem, idCanal,
+    status: 'em atendimento'
+  });
+  if (rowIndex) await setLinhaCache(idCanal, rowIndex);
+  return rowIndex;
+}
+async function atualizarIdCanal(rowIndex, idCanal) {
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!O${rowIndex}`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [[idCanal]] }
+    });
+  } catch(e) {
+    console.error('Erro ao gravar ID de canal:', e.message);
+  }
+}
+// ══════════════════════════════════════════════════════════════
+// ── ENVIO PELO INSTAGRAM DIRECT
+// ══════════════════════════════════════════════════════════════
+async function enviarInstagram(igsid, texto) {
+  if (!IG_TOKEN || !IG_USER_ID) {
+    console.error('Instagram nao configurado: faltam INSTAGRAM_TOKEN e/ou INSTAGRAM_USER_ID');
+    return { ok: false, erro: 'nao configurado' };
+  }
+  try {
+    const r = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${IG_USER_ID}/messages`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${IG_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recipient: { id: igsid }, message: { text: texto } })
+    });
+    const data = await r.json();
+    if (!r.ok || data.error) {
+      console.error('Erro ao enviar no Instagram:', JSON.stringify(data).substring(0, 500));
+      return { ok: false, data };
+    }
+    return { ok: true, data };
+  } catch(e) {
+    console.error('Falha de rede ao enviar no Instagram:', e.message);
+    return { ok: false, erro: e.message };
   }
 }
 // ══════════════════════════════════════════════════════════════
@@ -840,7 +1030,7 @@ async function verificarNovosLeads(manual = false, janelaHoras = 24, maxRodada =
     }
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A:N`
+      range: `${SHEET_NAME}!A:O`
     });
     const rows = res.data.values;
     if (!rows || rows.length <= 1) {
@@ -925,6 +1115,8 @@ async function verificarNovosLeads(manual = false, janelaHoras = 24, maxRodada =
       }
       await atualizarStatus(i + 1, 'abordado pelo agente');
       await atualizarOrigem(i + 1, 'bot-planilha');
+      // Carimba o ID do canal para a linha continuar localizavel sem o Redis.
+      await atualizarIdCanal(i + 1, chaveNumero(numeroLimpo));
       await marcarNumeroAbordado(numeroLimpo);
       const totalHoje = await incrementarAbordadosHoje();
       console.log(`Abordado com sucesso. Total hoje: ${totalHoje}/${TETO_DIARIO}`);
@@ -1012,6 +1204,84 @@ app.post('/chat', async (req, res) => {
   }
 });
 // ══════════════════════════════════════════════════════════════
+// ── TRATAMENTO DO BLOCO DE LEAD, COMPARTILHADO ENTRE OS CANAIS
+// ══════════════════════════════════════════════════════════════
+// WhatsApp e Instagram usam o MESMO prompt e a MESMA regua. Se cada webhook
+// tivesse a sua copia desta logica, os dois canais divergiriam na primeira
+// correcao feita so em um deles. Entao existe uma funcao so.
+// Devolve o lead quando o comercial deve ser acionado, ou null.
+async function completarDadosLead(rowIndex, parsed) {
+  // Preenche nome, e-mail, empresa e CNPJ apenas onde a celula esta VAZIA.
+  // O que o lead escreveu no formulario vale mais que o que o agente deduziu
+  // na conversa, entao dado existente nunca e sobrescrito.
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return;
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!A${rowIndex}:O${rowIndex}`
+    });
+    const atual = (r.data.values && r.data.values[0]) || [];
+    const mapa = [
+      ['B', 1, parsed.nome], ['C', 2, parsed.email],
+      ['E', 4, parsed.empresa], ['H', 7, parsed.cnpj]
+    ];
+    const data = [];
+    for (const [col, idx, valor] of mapa) {
+      const v = (valor || '').trim();
+      if (v && v !== '-' && !((atual[idx] || '').trim())) {
+        data.push({ range: `${SHEET_NAME}!${col}${rowIndex}`, values: [[v]] });
+      }
+    }
+    if (!data.length) return;
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { valueInputOption: 'RAW', data }
+    });
+    console.log(`Linha ${rowIndex}: ${data.length} campo(s) cadastrais preenchidos pelo agente`);
+  } catch(e) {
+    console.error('Erro ao completar dados do lead:', e.message);
+  }
+}
+async function tratarBlocoLead(parsed, ctx) {
+  const rowIndex = await garantirLinhaDoContato({
+    idCanal: ctx.idCanal,
+    telefone: ctx.telefone,
+    nome: parsed.nome || ctx.nomeFallback || '',
+    origem: ctx.origem
+  });
+  if (isNaoLead(parsed)) {
+    console.log('NAO_LEAD identificado, e-mail bloqueado:', parsed.nome, parsed.empresa, parsed.motivo_classificacao);
+    if (rowIndex) {
+      await atualizarStatus(rowIndex, 'encerrado, não é lead');
+      await atualizarQualificacao(rowIndex, 'NAO_LEAD', parsed.motivo_classificacao);
+      await atualizarOrigem(rowIndex, ctx.origem);
+      await completarDadosLead(rowIndex, parsed);
+    }
+    return null;
+  }
+  if (!validarLead(parsed)) {
+    console.log('Lead BLOQUEADO (dados incompletos):', JSON.stringify(parsed).substring(0, 300));
+    return null;
+  }
+  const temClassificacao = parsed.classificacao && parsed.classificacao.trim() && parsed.classificacao.trim() !== '-';
+  if (!temClassificacao) {
+    console.log('Lead com dados mas SEM classificação, aguardando conclusão:', parsed.nome);
+    return null;
+  }
+  corrigirClassificacaoSeInconsistente(parsed);
+  const placar = placarCriterios(parsed);
+  console.log('Lead VALIDADO:', parsed.nome, parsed.empresa,
+    'Canal:', ctx.canal, 'Classificação:', parsed.classificacao, `Critérios: ${placar.ok}/4`);
+  if (rowIndex) {
+    await atualizarStatus(rowIndex, 'qualificado pelo agente');
+    await atualizarQualificacao(rowIndex, classificacaoNormalizada(parsed), parsed.motivo_classificacao);
+    await atualizarOrigem(rowIndex, ctx.origem);
+    await completarDadosLead(rowIndex, parsed);
+  }
+  return parsed;
+}
+// ══════════════════════════════════════════════════════════════
 // ── WEBHOOK CLOUD API — VERIFICAÇÃO (GET)
 // ══════════════════════════════════════════════════════════════
 // A Meta chama esta rota uma vez, ao salvar o webhook no painel.
@@ -1074,6 +1344,12 @@ app.post('/whatsapp-cloud', async (req, res) => {
     console.log('Processando mensagem de:', numero, 'Texto:', mensagem.substring(0, 100));
     await registrarConversa(numero, 'recebida', mensagem);
     await marcarLidoEDigitando(msgId);
+    // Mesma regra do Instagram: quem chama o WhatsApp direto, sem nunca ter
+    // preenchido o formulario, ganha linha na planilha no primeiro contato.
+    // Antes disso, essas conversas eram as "orfas" que o painel denunciava.
+    await garantirLinhaDoContato({
+      idCanal: chaveNumero(numero), telefone: numero, nome: '', origem: 'bot-site'
+    });
     let historico = await getConversa(numero) || [];
     historico.push({ role: 'user', content: mensagem });
     if (historico.length > 20) {
@@ -1106,44 +1382,10 @@ app.post('/whatsapp-cloud', async (req, res) => {
         if (!parsed.telefone || !parsed.telefone.trim() || parsed.telefone.trim() === '-') {
           parsed.telefone = numero;
         }
-        // Localiza a linha na planilha uma única vez, serve para os dois ramos.
-        let rowIndex = await getLeadPlanilha(numero);
-        if (!rowIndex) {
-          rowIndex = await buscarLinhaPorTelefone(numero);
-          if (rowIndex) {
-            await setLeadPlanilha(numero, rowIndex);
-            console.log(`Linha encontrada na planilha pelo telefone: ${rowIndex}`);
-          }
-        }
-        if (isNaoLead(parsed)) {
-          // NAO_LEAD registra na planilha e NÃO aciona o comercial.
-          // Fornecedor, candidato, cobrança e assunto interno param aqui.
-          console.log('NAO_LEAD identificado, e-mail bloqueado:', parsed.nome, parsed.empresa, parsed.motivo_classificacao);
-          if (rowIndex) {
-            await atualizarStatus(rowIndex, 'encerrado, não é lead');
-            await atualizarQualificacao(rowIndex, 'NAO_LEAD', parsed.motivo_classificacao);
-            await atualizarOrigem(rowIndex, 'bot-site');
-          }
-        } else if (validarLead(parsed)) {
-          const temClassificacao = parsed.classificacao && parsed.classificacao.trim() && parsed.classificacao.trim() !== '-';
-          if (temClassificacao) {
-            // Rede de segurança: BOM com critério FALHOU é rebaixado aqui.
-            corrigirClassificacaoSeInconsistente(parsed);
-            leadDetectado = parsed;
-            const placar = placarCriterios(parsed);
-            console.log('Lead VALIDADO:', parsed.nome, parsed.empresa,
-              'Classificação:', parsed.classificacao, `Critérios: ${placar.ok}/4`);
-            if (rowIndex) {
-              await atualizarStatus(rowIndex, 'qualificado pelo agente');
-              await atualizarQualificacao(rowIndex, classificacaoNormalizada(parsed), parsed.motivo_classificacao);
-              await atualizarOrigem(rowIndex, 'bot-site');
-            }
-          } else {
-            console.log('Lead com dados mas SEM classificação, aguardando conclusão:', parsed.nome);
-          }
-        } else {
-          console.log('Lead BLOQUEADO (dados incompletos):', JSON.stringify(parsed));
-        }
+        leadDetectado = await tratarBlocoLead(parsed, {
+          idCanal: chaveNumero(numero), telefone: numero,
+          origem: 'bot-site', canal: 'whatsapp'
+        });
       } catch(e) {
         console.log('Erro ao parsear lead:', e.message);
       }
@@ -1163,6 +1405,176 @@ app.post('/whatsapp-cloud', async (req, res) => {
   } catch(error) {
     console.error('Erro WhatsApp Cloud:', error.message);
   }
+});
+// ══════════════════════════════════════════════════════════════
+// ── WEBHOOK INSTAGRAM DIRECT — VERIFICAÇÃO (GET)
+// ══════════════════════════════════════════════════════════════
+app.get('/instagram', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  if (mode === 'subscribe' && token === META_VERIFY_TOKEN) {
+    console.log('Webhook do Instagram verificado pela Meta com sucesso');
+    return res.status(200).send(challenge);
+  }
+  console.log('Falha na verificação do webhook do Instagram. Token não confere.');
+  return res.sendStatus(403);
+});
+// Busca nome e @ do contato. Sem isso a inbox mostraria so o ID numerico e
+// ninguem consegue auditar conversa de "17841400000000000".
+async function perfilInstagram(igsid) {
+  if (!IG_TOKEN) return null;
+  try {
+    const r = await fetch(
+      `https://graph.facebook.com/${GRAPH_VERSION}/${igsid}?fields=name,username`,
+      { headers: { 'Authorization': `Bearer ${IG_TOKEN}` } }
+    );
+    const d = await r.json();
+    if (!r.ok || d.error) return null;
+    return { nome: d.name || '', usuario: d.username || '' };
+  } catch(e) {
+    return null;
+  }
+}
+// ══════════════════════════════════════════════════════════════
+// ── WEBHOOK INSTAGRAM DIRECT — MENSAGENS (POST)
+// ══════════════════════════════════════════════════════════════
+app.post('/instagram', async (req, res) => {
+  console.log('WEBHOOK INSTAGRAM:', JSON.stringify(req.body).substring(0, 700));
+  res.status(200).json({ ok: true });
+  try {
+    const entry = req.body?.entry?.[0];
+    const ev = entry?.messaging?.[0];
+    if (!ev) return;
+    // ECHO: a Meta devolve para o webhook TODA mensagem que a propria conta
+    // envia. Sem esta trava o bot le a propria resposta como se fosse do lead
+    // e conversa sozinho, em loop, gastando credito da Anthropic.
+    if (ev.message && ev.message.is_echo) return;
+    // Eventos de leitura, entrega, reacao e postback nao sao mensagem.
+    if (!ev.message) return;
+    const igsid = ev.sender && ev.sender.id;
+    if (!igsid) return;
+    // Ignora eventos em que a propria conta e a remetente.
+    if (IG_USER_ID && String(igsid) === String(IG_USER_ID)) return;
+    const mid = ev.message.mid;
+    if (await jaProcessouMensagem(mid)) {
+      console.log('Evento de Instagram duplicado ignorado:', mid);
+      return;
+    }
+    const chave = chaveInstagram(igsid);
+    let texto = ev.message.text;
+    // Midia, figurinha, audio, resposta de story: o agente so le texto.
+    if (!texto || !texto.trim()) {
+      if (ev.message.attachments || ev.message.is_unsupported) {
+        console.log('Mídia recebida no Instagram de', igsid);
+        await enviarInstagram(igsid, 'Oi! Consigo ler só mensagens de texto por aqui. Pode escrever para mim o que você precisa?');
+      }
+      return;
+    }
+    console.log('Instagram, mensagem de', igsid, ':', texto.substring(0, 100));
+    await registrarConversa(chave, 'recebida', texto, 'bot-instagram');
+    let historico = await getConversaChave(chave) || [];
+    // A linha nasce no PRIMEIRO contato, nao na conclusao da qualificacao.
+    // Se esperasse o bloco de lead, quem conversa e some antes do fim
+    // continuaria invisivel, que e exatamente o buraco que estamos fechando.
+    const perfilInicial = historico.length ? null : await perfilInstagram(igsid);
+    await garantirLinhaDoContato({
+      idCanal: chave, telefone: '',
+      nome: perfilInicial && (perfilInicial.nome || perfilInicial.usuario) || '',
+      origem: 'bot-instagram'
+    });
+    // Na primeira mensagem, injeta o contexto do canal. O prompt e o mesmo do
+    // WhatsApp, entao o agente precisa saber onde esta para nao prometer o que
+    // o canal nao faz e para ler o publico corretamente.
+    if (!historico.length) {
+      const perfil = perfilInicial;
+      const nome = perfil && (perfil.nome || perfil.usuario) || '';
+      historico.push({
+        role: 'user',
+        content: `[CONTEXTO INTERNO — não mencionar ao contato]\n` +
+          `Esta conversa chegou pelo Instagram Direct da Ginger.\n` +
+          (nome ? `Nome do perfil: ${nome}\n` : '') +
+          (perfil && perfil.usuario ? `Usuário: @${perfil.usuario}\n` : '') +
+          `O público do Instagram é majoritariamente consumidor final, então a REGRA DE ENTRADA sobre CNPJ tende a ser decisiva mais cedo que no WhatsApp. Aplique a REGRA ZERO e a REGRA DE ENTRADA normalmente, com o mesmo cuidado e a mesma cordialidade. Não peça telefone logo de cara, o contato já está falando com você por aqui.`
+      });
+      historico.push({ role: 'assistant', content: 'Entendido.' });
+    }
+    historico.push({ role: 'user', content: texto });
+    if (historico.length > 20) historico = historico.slice(-20);
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1000,
+        system: SYSTEM_PROMPT,
+        messages: historico.filter(m => m.role && m.content)
+      })
+    });
+    const data = await response.json();
+    if (!data.content) console.log('CLAUDE ERRO /instagram:', JSON.stringify(data).substring(0, 800));
+    const raw = data.content?.[0]?.text || 'Não consegui processar. Pode repetir?';
+    const regex = /%%%LEAD_DATA%%%([\s\S]*?)%%%END_LEAD_DATA%%%/;
+    const match = raw.match(regex);
+    let leadDetectado = null;
+    if (match) {
+      try {
+        const parsed = JSON.parse(match[1].trim());
+        const perfil = await perfilInstagram(igsid);
+        leadDetectado = await tratarBlocoLead(parsed, {
+          idCanal: chave,
+          telefone: (parsed.telefone || '').trim() && parsed.telefone.trim() !== '-' ? parsed.telefone : '',
+          nomeFallback: perfil && (perfil.nome || perfil.usuario) || '',
+          origem: 'bot-instagram',
+          canal: 'instagram'
+        });
+      } catch(e) {
+        console.log('Erro ao parsear lead do Instagram:', e.message);
+      }
+    }
+    const resposta = raw.replace(regex, '').trim();
+    historico.push({ role: 'assistant', content: raw });
+    await saveConversaChave(chave, historico);
+    await delayHumanizado();
+    const envio = await enviarInstagram(igsid, resposta);
+    console.log('Envio no Instagram:', envio.ok ? 'ok' : 'FALHOU');
+    if (envio.ok) await registrarConversa(chave, 'enviada', resposta, 'bot-instagram');
+    if (leadDetectado) await enviarEmailLead(leadDetectado, '@' + igsid + ' (Instagram)');
+  } catch(error) {
+    console.error('Erro no webhook do Instagram:', error.message);
+  }
+});
+// ── ROTA: TESTAR O INSTAGRAM (debug)
+// Confirma token e ID da conta sem mandar mensagem para ninguem.
+// Com ?para=<IGSID>&texto=oi manda uma mensagem de teste.
+app.get('/instagram-test', async (req, res) => {
+  const resultado = {
+    tokenConfigurado: !!IG_TOKEN,
+    userIdConfigurado: !!IG_USER_ID,
+    verifyTokenConfigurado: !!META_VERIFY_TOKEN
+  };
+  if (!IG_TOKEN || !IG_USER_ID) {
+    resultado.dica = 'Faltam INSTAGRAM_TOKEN e/ou INSTAGRAM_USER_ID no Render.';
+    return res.status(503).json(resultado);
+  }
+  try {
+    const r = await fetch(
+      `https://graph.facebook.com/${GRAPH_VERSION}/${IG_USER_ID}?fields=id,username,name`,
+      { headers: { 'Authorization': `Bearer ${IG_TOKEN}` } }
+    );
+    resultado.conta = await r.json();
+    resultado.status = r.status;
+  } catch(e) {
+    resultado.erro = e.message;
+  }
+  if (req.query.para) {
+    resultado.envioDeTeste = await enviarInstagram(req.query.para, req.query.texto || 'Teste do agente Ginger.');
+  }
+  res.json(resultado);
 });
 // ── ROTA: VERIFICAÇÃO MANUAL DA PLANILHA
 // Sem parametros: comportamento normal, so leads das ultimas 24h.
@@ -1192,7 +1604,7 @@ app.get('/backlog-previa', async (req, res) => {
     if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
     const r = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A:N`
+      range: `${SHEET_NAME}!A:O`
     });
     const rows = r.data.values || [];
     const faixas = { ate7: 0, ate15: 0, ate30: 0, ate45: 0, acima45: 0 };
@@ -1266,7 +1678,7 @@ app.get('/metricas', async (req, res) => {
     if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
     const r = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A:N`
+      range: `${SHEET_NAME}!A:O`
     });
     const rows = r.data.values || [];
     const porOrigem = {};
@@ -1390,27 +1802,33 @@ app.get('/inbox', async (req, res) => {
     // Cadastro dos leads, para casar nome e empresa com o numero
     const rl = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A:N`
+      range: `${SHEET_NAME}!A:O`
     });
     const leads = {};
     for (const row of (rl.data.values || []).slice(1)) {
-      const k = chaveNumero(row[3] || '');
-      if (!k) continue;
-      leads[k] = {
-        nome: row[1] || '', empresa: row[4] || '', cnpj: row[7] || '',
+      const info = {
+        data: row[0] || '', nome: row[1] || '', empresa: row[4] || '', cnpj: row[7] || '',
         status: row[8] || '', qualificacao: row[10] || '', motivo: row[11] || '',
         projeto: row[12] || ''
       };
+      // Indexa pelas duas chaves possiveis: telefone e ID do canal. Sem a
+      // segunda, todo contato de Instagram apareceria sem nome na inbox.
+      const kTel = chaveNumero(row[3] || '');
+      const kCanal = (row[COL_ID_CANAL] || '').trim();
+      if (kTel) leads[kTel] = info;
+      if (kCanal) leads[kCanal] = info;
     }
     // Agrupa por contato. Numero do WhatsApp usa a chave canonica, para nao
     // separar a mesma pessoa por causa do nono digito. Conversa do site nao
     // tem numero, entao a propria sessao vira a chave.
-    const filtroNumero = req.query.numero ? chaveNumero(req.query.numero) : null;
+    const filtroNumero = req.query.numero ? chaveConversa(req.query.numero) : null;
     const grupos = {};
     for (const l of linhas) {
       const bruto = l[1] || '';
-      const chave = bruto.startsWith('site-') ? bruto : (chaveNumero(bruto) || bruto);
-      if (!chave) continue;
+      // Linhas de diagnostico do /sheet-write-test nao sao contatos.
+      if (!bruto || bruto === 'teste-escrita') continue;
+      const chave = chaveConversa(bruto);
+      if (!chave || chave === '55') continue;
       if (filtroNumero && chave !== filtroNumero) continue;
       if (!grupos[chave]) grupos[chave] = { chave, numeroBruto: bruto, mensagens: [] };
       grupos[chave].mensagens.push({
@@ -1440,8 +1858,17 @@ app.get('/inbox', async (req, res) => {
     };
     const blocos = mostrados.map(c => {
       const L = c.lead;
-      const titulo = L && L.nome ? `${L.nome}${L.empresa ? ' · ' + L.empresa : ''}` : (c.chave.startsWith('site-') ? 'Visitante do site' : c.chave);
+      const canal = canalDaChave(c.chave);
+      const semNome = c.chave.startsWith('site-') ? 'Visitante do site'
+        : c.chave.startsWith(IG_PREFIXO) ? 'Contato do Instagram' : c.chave;
+      const titulo = L && L.nome ? `${L.nome}${L.empresa ? ' · ' + L.empresa : ''}` : semNome;
+      // Data de entrada do lead. Vem da coluna A da planilha. Se o contato nao
+      // tem linha na planilha (chamou o WhatsApp sem nunca preencher formulario),
+      // cai para a data da primeira mensagem registrada.
+      const dataEntrada = (L && L.data) ? String(L.data).split(' ')[0]
+        : (c.mensagens.length ? String(c.mensagens[0].quando).split(' ')[0] : '');
       const tags = [];
+      tags.push(badge(canal, canal === 'Instagram' ? '#C13584' : canal === 'Chat do site' ? '#8A8792' : '#128C7E'));
       if (L && L.qualificacao) tags.push(badge(L.qualificacao, corQual(L.qualificacao)));
       if (L && L.status) tags.push(badge(L.status, '#6B4E8C'));
       if (L && L.projeto) tags.push(badge('projeto ' + L.projeto, '#1B7F4B'));
@@ -1455,6 +1882,7 @@ app.get('/inbox', async (req, res) => {
       }).join('');
       return `<details class="contato"${filtroNumero ? ' open' : ''}>
         <summary>
+          ${dataEntrada ? `<span class="data">${escaparHtml(dataEntrada)}</span>` : ''}
           <span class="nome">${escaparHtml(titulo)}</span>
           <span class="tags">${tags.join(' ')}</span>
           <span class="meta">${c.mensagens.length} msg${L && L.cnpj ? ' · CNPJ ' + escaparHtml(L.cnpj) : ''} · ${escaparHtml(c.numeroBruto)}</span>
@@ -1482,6 +1910,8 @@ app.get('/inbox', async (req, res) => {
   summary { cursor:pointer; padding:12px 14px; list-style:none; }
   summary::-webkit-details-marker { display:none; }
   summary:hover { background:var(--lilas); }
+  .data { display:inline-block; font-variant-numeric:tabular-nums; color:#52514e;
+          background:#EFEAF4; border-radius:4px; padding:1px 6px; font-size:12px; margin-right:8px; }
   .nome { font-weight:600; color:var(--roxo); margin-right:8px; }
   .tags { display:inline; }
   .tag { display:inline-block; color:#fff; font-size:11px; padding:2px 7px;
@@ -1544,6 +1974,367 @@ app.get('/inbox', async (req, res) => {
   }
 });
 // ══════════════════════════════════════════════════════════════
+// ── PAINEL ANALITICO DOS LEADS DA INTERNET
+// ══════════════════════════════════════════════════════════════
+// Pagina de apresentacao. Mesma protecao da inbox (INBOX_KEY).
+// Exemplo: /painel?chave=XXX&mes=8&ano=2026
+//
+// Estados de engajamento, mutuamente exclusivos e nesta ordem de precedencia:
+//   nao abordado   -> coluna STATUS vazia, o bot ainda nao tocou
+//   sem resposta   -> abordado, zero mensagens recebidas
+//   abandonou      -> respondeu, sem qualificacao, calado ha mais de 24h
+//   em conversa    -> respondeu, sem qualificacao, ativo nas ultimas 24h
+//   qualificado    -> tem valor na coluna QUALIFICACAO
+//
+// "Sem resposta" e "abandonou" sao coisas diferentes e o painel separa as duas.
+// A primeira mede se o template de abordagem funciona. A segunda mede se o
+// agente perde a pessoa no meio da qualificacao. Somar as duas esconde qual
+// dos dois problemas voce tem.
+const PALETA = {
+  // Validadas com scripts/validate_palette.js nos dois modos.
+  // Rampa ordinal do funil (uma cor, monotona em luminosidade).
+  funilClaro: ['#B98FD1', '#9C6BBB', '#7E48A2', '#632C87', '#47166B'],
+  funilEscuro: ['#653F88', '#8054A8', '#9C6FC4', '#B98FD1', '#D4B4E5']
+};
+function fmtPct(a, b) {
+  if (!b) return '—';
+  return (Math.round((a / b) * 1000) / 10).toString().replace('.', ',') + '%';
+}
+app.get('/painel', async (req, res) => {
+  const chaveEsperada = process.env.INBOX_KEY;
+  if (!chaveEsperada) {
+    return res.status(503).type('text/plain; charset=utf-8')
+      .send('Painel desativado. Falta criar a variavel INBOX_KEY no Render.');
+  }
+  if (req.query.chave !== chaveEsperada) {
+    return res.status(403).type('text/plain; charset=utf-8').send('Chave invalida.');
+  }
+  const agora = new Date();
+  const brasil = new Date(agora.getTime() + (agora.getTimezoneOffset() * 60000) + (-3 * 3600000));
+  const mes = req.query.mes ? parseInt(req.query.mes) : brasil.getMonth() + 1;
+  const ano = req.query.ano ? parseInt(req.query.ano) : brasil.getFullYear();
+  const todos = req.query.todos === '1';
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return res.status(500).type('text/plain').send('Sheets indisponivel');
+    const [rl, rc] = await Promise.all([
+      sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A:O` }),
+      sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_CONVERSAS}!A:E` })
+    ]);
+    const conv = {};
+    for (const l of (rc.data.values || []).slice(1)) {
+      const bruto = l[1] || '';
+      if (!bruto || bruto === 'teste-escrita') continue;
+      const chave = chaveConversa(bruto);
+      if (!chave || chave === '55') continue;
+      if (!conv[chave]) conv[chave] = { recebidas: 0, enviadas: 0, ultima: 0, total: 0 };
+      const ts = parseDataBrasil(l[0]);
+      const dir = (l[2] || '').toLowerCase();
+      conv[chave].total++;
+      if (dir === 'recebida') conv[chave].recebidas++; else conv[chave].enviadas++;
+      if (ts >= conv[chave].ultima) conv[chave].ultima = ts;
+    }
+    const agoraMs = Date.now();
+    const H24 = 24 * 3600 * 1000;
+    const linhasP = (rl.data.values || []).slice(1);
+    const usadas = new Set();
+    const leads = [];
+    // Quantos leads no arquivo INTEIRO tem a coluna PROJETO preenchida. Serve
+    // para distinguir "nao houve projeto" de "ninguem preencheu o campo".
+    let projetosNoArquivoTodo = 0;
+    for (let i = 0; i < linhasP.length; i++) {
+      const row = linhasP[i];
+      if ((row[12] || '').trim()) projetosNoArquivoTodo++;
+      const ma = mesAnoDaData(row[0] || '');
+      if (!todos && (!ma || ma.mes !== mes || ma.ano !== ano)) continue;
+      if (!(row[1] || '').trim() && !(row[3] || '').trim()) continue;
+      // Um lead pode ser encontrado pelo telefone ou pelo ID do canal.
+      // O de Instagram so tem o segundo.
+      const kTel = chaveNumero(row[3] || '');
+      const kCanal = (row[COL_ID_CANAL] || '').trim();
+      if (kTel) usadas.add(kTel);
+      if (kCanal) usadas.add(kCanal);
+      const c = (kCanal && conv[kCanal]) || (kTel && conv[kTel])
+        || { recebidas: 0, enviadas: 0, ultima: 0, total: 0 };
+      const status = (row[8] || '').trim();
+      const qual = (row[10] || '').trim().toUpperCase();
+      let estado;
+      if (qual) estado = 'qualificado';
+      else if (!status) estado = 'nao_abordado';
+      else if (c.recebidas === 0) estado = 'sem_resposta';
+      else if (c.ultima && (agoraMs - c.ultima) <= H24) estado = 'em_conversa';
+      else estado = 'abandonou';
+      leads.push({
+        data: (row[0] || '').split(' ')[0], nome: row[1] || '', empresa: row[4] || '',
+        origem: (row[9] || '').trim() || 'sem origem', qual, motivo: row[11] || '',
+        projeto: (row[12] || '').trim(), msgs: c.total, recebidas: c.recebidas,
+        ultima: c.ultima, estado
+      });
+    }
+    const orfas = Object.keys(conv).filter(k => !k.startsWith('site-') && !usadas.has(k)).length;
+    const sessoesSite = Object.keys(conv).filter(k => k.startsWith('site-')).length;
+    const MESES = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+      'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+    const link = (m, a, t) => `/painel?chave=${encodeURIComponent(chaveEsperada)}&mes=${m}&ano=${a}${t ? '&todos=1' : ''}`;
+    const mesAnt = mes === 1 ? 12 : mes - 1, anoAnt = mes === 1 ? ano - 1 : ano;
+    const mesProx = mes === 12 ? 1 : mes + 1, anoProx = mes === 12 ? ano + 1 : ano;
+    const DADOS = {
+      leads, orfas, sessoesSite, projetosNoArquivoTodo,
+      periodo: todos ? 'Todo o histórico' : MESES[mes] + ' de ' + ano,
+      geradoEm: agoraBrasil()
+    };
+    const html = `<!DOCTYPE html>
+<html lang="pt-BR"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Painel de Leads da Internet — Ginger</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --page:#F4F1F6; --surface:#FFFFFF;
+    --ink:#191320; --ink2:#52514E; --muted:#8A8792;
+    --grid:#E4DEEA; --trilho:#EFEAF4; --borda:rgba(25,19,32,0.10);
+    --roxo:#47166B; --on-ink:#FFFFFF; --serie:#7E48A2; --serie-laranja:#F15A29;
+    --f1:#B98FD1; --f2:#9C6BBB; --f3:#7E48A2; --f4:#632C87; --f5:#47166B;
+    --st-bom:#0CA30C; --st-fut:#FAB219; --st-ruim:#D03B3B; --st-nao:#6E6E6E;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --page:#141019; --surface:#1A1620;
+      --ink:#FFFFFF; --ink2:#C9C3D1; --muted:#9A93A5;
+      --grid:#332B3D; --trilho:#26202F; --borda:rgba(255,255,255,0.10);
+      --roxo:#D4B4E5; --on-ink:#1A1620; --serie:#A87FC4; --serie-laranja:#DD5F2C;
+      --f1:#653F88; --f2:#8054A8; --f3:#9C6FC4; --f4:#B98FD1; --f5:#D4B4E5;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--page); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; font-size:15px; }
+  .wrap { max-width:1060px; margin:0 auto; padding:20px 16px 40px; }
+  h1 { font-size:20px; margin:0; font-weight:600; color:var(--roxo); }
+  .sub { color:var(--ink2); font-size:13px; margin:2px 0 16px; }
+  .filtros { background:var(--surface); border:1px solid var(--borda); border-radius:10px;
+    padding:10px 12px; margin-bottom:18px; }
+  .fl { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .fl + .fl { margin-top:9px; padding-top:9px; border-top:1px solid var(--grid); }
+  .fl .rotf { font-size:12px; color:var(--muted); min-width:74px; }
+  .filtros a, .chip { text-decoration:none; color:var(--ink2); border:1px solid var(--borda);
+    background:none; border-radius:7px; padding:5px 11px; font-size:13px; cursor:pointer;
+    font-family:inherit; }
+  .filtros a:hover, .chip:hover { background:var(--trilho); }
+  .filtros a.on, .chip.on { background:var(--roxo); color:var(--on-ink);
+    border-color:var(--roxo); font-weight:600; }
+  .filtros .periodo { font-weight:600; color:var(--ink); margin:0 4px; }
+  .limpar { margin-left:auto; color:var(--roxo); font-weight:600; }
+  .card { background:var(--surface); border:1px solid var(--borda); border-radius:12px;
+    padding:18px 20px; margin-bottom:14px; }
+  .card h2 { font-size:14px; margin:0 0 2px; font-weight:600; color:var(--ink); }
+  .card p.leg { font-size:12.5px; color:var(--muted); margin:0 0 14px; }
+  .heroi { display:flex; align-items:center; gap:16px; }
+  .heroi .n { font-size:56px; font-weight:600; line-height:1; color:var(--roxo); }
+  .heroi .t1 { font-size:16px; font-weight:600; color:var(--ink); line-height:1.25; }
+  .heroi .t2 { font-size:14px; color:var(--ink2); line-height:1.3; }
+  .heroi-sub { font-size:13.5px; color:var(--ink2); margin:12px 0 0;
+    padding-top:12px; border-top:1px solid var(--grid); }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:14px; }
+  .kpi { background:var(--surface); border:1px solid var(--borda); border-radius:12px; padding:14px 16px; }
+  .kpi .lab { font-size:12.5px; color:var(--muted); margin-bottom:6px; }
+  .kpi .n { font-size:28px; font-weight:600; line-height:1.1; }
+  .kpi .pe { font-size:12px; color:var(--ink2); margin-top:3px; }
+  .duas { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:760px) { .duas { grid-template-columns:1fr; } }
+  .linha { display:grid; grid-template-columns:minmax(150px,1.1fr) 3fr 42px;
+    align-items:center; gap:10px; margin-bottom:8px; }
+  .clic { cursor:pointer; }
+  .clic:hover .trilho { outline:2px solid var(--grid); outline-offset:2px; border-radius:5px; }
+  .linha.ativa .rot { color:var(--ink); font-weight:600; }
+  .rot { font-size:13px; color:var(--ink2); }
+  .rot .nota { display:block; font-size:11.5px; color:var(--muted); font-weight:400; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:3px;
+    margin-right:6px; vertical-align:baseline; }
+  .trilho { background:var(--trilho); border-radius:4px; height:14px; }
+  .marca { height:14px; border-radius:0 4px 4px 0; transition:width .25s; }
+  .val { text-align:right; font-variant-numeric:tabular-nums; font-size:14px;
+    font-weight:600; color:var(--ink); }
+  .alerta { border-left:3px solid var(--st-fut); background:var(--trilho);
+    border-radius:0 8px 8px 0; padding:12px 14px; font-size:13.5px; color:var(--ink2);
+    margin-bottom:14px; }
+  .alerta b { color:var(--ink); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th { text-align:left; font-weight:600; color:var(--ink2); border-bottom:1px solid var(--grid);
+    padding:7px 8px; white-space:nowrap; }
+  td { padding:7px 8px; border-bottom:1px solid var(--grid); color:var(--ink2); vertical-align:top; }
+  td.num { font-variant-numeric:tabular-nums; white-space:nowrap; }
+  td.obs { color:var(--muted); max-width:230px; }
+  .rodape { color:var(--muted); font-size:12px; text-align:center; padding:16px 0 0; }
+  .rolar { overflow-x:auto; }
+  @media print {
+    body { background:#fff; }
+    .filtros .navmes, .rodape, .clic { cursor:auto; }
+    .navmes, .rodape { display:none; }
+    .card, .kpi { border:1px solid #ccc; break-inside:avoid; }
+  }
+</style>
+</head><body class="viz-root" data-palette="#B98FD1,#9C6BBB,#7E48A2,#632C87,#47166B" data-mode="light">
+<div class="wrap">
+  <h1>Painel de Leads da Internet</h1>
+  <div class="sub">Ginger Fragrance Design · ${escaparHtml(DADOS.periodo)} · gerado em ${escaparHtml(DADOS.geradoEm)}</div>
+
+  <div class="filtros">
+    <div class="fl navmes">
+      <a href="${link(mesAnt, anoAnt, false)}">← ${MESES[mesAnt]}</a>
+      <span class="periodo">${escaparHtml(DADOS.periodo)}</span>
+      <a href="${link(mesProx, anoProx, false)}">${MESES[mesProx]} →</a>
+      <a href="${link(mes, ano, false)}" class="${todos ? '' : 'on'}">Mês</a>
+      <a href="${link(mes, ano, true)}" class="${todos ? 'on' : ''}">Tudo</a>
+    </div>
+    <div class="fl"><span class="rotf">Origem</span><span id="f-origem"></span></div>
+    <div class="fl"><span class="rotf">Qualificação</span><span id="f-qual"></span></div>
+    <div class="fl"><span class="rotf">Estado</span><span id="f-estado"></span>
+      <button class="chip limpar" id="limpar" hidden>Limpar filtros</button></div>
+  </div>
+
+  <div id="app"></div>
+  <div class="rodape">Uso interno. Contém dados pessoais de leads. Clique nas barras para afunilar. Ctrl+P imprime ou salva em PDF.</div>
+</div>
+<script>
+const D = ${JSON.stringify(DADOS)};
+const F = { origem:null, qual:null, estado:null };
+const ROT_EST = { qualificado:'Qualificado', sem_resposta:'Sem resposta',
+  abandonou:'Parou de responder', em_conversa:'Em conversa', nao_abordado:'Não abordado' };
+const NOTA_EST = { sem_resposta:'abordado, nunca respondeu',
+  abandonou:'respondeu e sumiu, sem devolutiva', em_conversa:'ativo nas últimas 24h',
+  qualificado:'conversa concluída', nao_abordado:'ainda na fila' };
+const NOTA_QUAL = { BOM:'passou nos quatro critérios',
+  POTENCIAL_FUTURO:'sem CNPJ, volume baixo ou não informado',
+  RUIM:'sem projeto ou interesse real', NAO_LEAD:'fornecedor, cobrança, assunto interno' };
+const TOK = { BOM:'bom', POTENCIAL_FUTURO:'fut', RUIM:'ruim', NAO_LEAD:'nao' };
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,
+  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function pct(a,b){ return b ? (Math.round((a/b)*1000)/10).toString().replace('.',',')+'%' : '—'; }
+function filtrados(){ return D.leads.filter(l =>
+  (!F.origem || l.origem===F.origem) && (!F.qual || l.qual===F.qual) &&
+  (!F.estado || l.estado===F.estado)); }
+function corOrigem(o){ return o==='bot-site' ? 'var(--serie-laranja)'
+  : o==='bot-planilha' ? 'var(--serie)' : 'var(--muted)'; }
+function barra(o){
+  const p = o.max>0 ? Math.max(o.valor>0?1.5:0,(o.valor/o.max)*100) : 0;
+  return '<div class="linha '+(o.clic?'clic ':'')+(o.ativa?'ativa':'')+'"'+
+    (o.clic?' data-f="'+o.dim+'" data-v="'+esc(o.chave)+'"':'')+'>'+
+    '<div class="rot">'+(o.sw?'<span class="sw" style="background:var(--st-'+o.sw+')"></span>':'')+
+    esc(o.rot)+(o.nota?'<span class="nota">'+esc(o.nota)+'</span>':'')+'</div>'+
+    '<div class="trilho"><div class="marca" style="width:'+p+'%;background:'+o.cor+'"></div></div>'+
+    '<div class="val">'+o.valor+'</div></div>';
+}
+function chips(id, dim, vals, rotulo){
+  const el = document.getElementById(id);
+  el.innerHTML = vals.map(v => '<button class="chip '+(F[dim]===v?'on':'')+'" data-f="'+dim+
+    '" data-v="'+esc(v)+'">'+esc(rotulo?rotulo(v):v)+'</button>').join(' ');
+}
+function render(){
+  const L = filtrados();
+  const n = e => L.filter(l=>l.estado===e).length;
+  const q = v => L.filter(l=>l.qual===v).length;
+  const captados=L.length, abordados=L.filter(l=>l.estado!=='nao_abordado').length;
+  const responderam=L.filter(l=>l.recebidas>0).length;
+  const qualificados=L.filter(l=>l.qual).length;
+  const bom=q('BOM'), futuro=q('POTENCIAL_FUTURO'), ruim=q('RUIM'), naoLead=q('NAO_LEAD');
+  const projetos=L.filter(l=>l.projeto).length;
+  const porOrigem={}; L.forEach(l=>{ porOrigem[l.origem]=(porOrigem[l.origem]||0)+1; });
+  const origens=Object.entries(porOrigem).sort((a,b)=>b[1]-a[1]);
+  const maxOrig=Math.max(...origens.map(o=>o[1]),1);
+  const maxQual=Math.max(bom,futuro,ruim,naoLead,1);
+  const maxEst=Math.max(n('sem_resposta'),n('abandonou'),n('em_conversa'),n('qualificado'),n('nao_abordado'),1);
+  const etapas=[['Leads captados',captados],['Abordados pelo agente',abordados],
+    ['Responderam',responderam],['Qualificados como BOM',bom],['Projeto aberto',projetos]];
+  const funil=etapas.map((e,i)=>{
+    const p=captados>0?Math.max(e[1]>0?1.5:0,(e[1]/captados)*100):0;
+    let nota=i===0?'':(etapas[i-1][1]>0?pct(e[1],etapas[i-1][1])+' da etapa anterior':'');
+    if(i===4) nota=(nota?nota+' · ':'')+'anotado à mão pelo comercial';
+    return '<div class="linha"><div class="rot">'+esc(e[0])+
+      (nota?'<span class="nota">'+esc(nota)+'</span>':'')+'</div>'+
+      '<div class="trilho"><div class="marca" style="width:'+p+'%;background:var(--f'+(i+1)+')"></div></div>'+
+      '<div class="val">'+e[1]+'</div></div>';
+  }).join('');
+  // Honestidade sobre a ultima etapa: zero projeto pode significar duas coisas
+  // completamente diferentes, e num slide elas nao podem virar o mesmo numero.
+  const avisoProjeto = D.projetosNoArquivoTodo===0
+    ? '<div class="alerta"><b>A etapa "Projeto aberto" ainda não tem dado.</b> Esse número não vem do Otimizah, ele vem da coluna PROJETO da planilha, preenchida à mão por quem abre o projeto. Nenhuma linha do arquivo inteiro está preenchida, então este zero significa "ninguém anotou ainda", e não "nenhum projeto foi aberto". Enquanto for assim, não leve essa linha para apresentação.</div>'
+    : (projetos===0 && bom>0
+      ? '<div class="alerta"><b>Nenhum projeto anotado neste recorte</b>, embora existam leads BOM. Como o campo é preenchido à mão, pode ser ausência de projeto ou ausência de anotação. Vale confirmar com o comercial antes de apresentar.</div>' : '');
+  const tab=L.slice().sort((a,b)=>(b.ultima||0)-(a.ultima||0)).map(l=>'<tr>'+
+    '<td class="num">'+esc(l.data)+'</td><td>'+esc(l.nome)+'</td><td>'+esc(l.empresa)+'</td>'+
+    '<td>'+esc(l.origem)+'</td><td>'+esc(ROT_EST[l.estado]||l.estado)+'</td>'+
+    '<td>'+(l.qual?'<span class="sw" style="background:var(--st-'+(TOK[l.qual]||'nao')+')"></span>'+esc(l.qual):'—')+'</td>'+
+    '<td class="num">'+l.msgs+'</td><td class="num">'+l.recebidas+'</td>'+
+    '<td>'+(esc(l.projeto)||'—')+'</td><td class="obs">'+esc(l.motivo)+'</td></tr>').join('');
+  const ativo = F.origem||F.qual||F.estado;
+  document.getElementById('app').innerHTML =
+  '<div class="card"><div class="heroi"><div class="n">'+bom+'</div><div>'+
+    '<div class="t1">leads qualificados como BOM</div>'+
+    '<div class="t2">'+esc(D.periodo)+(ativo?' · recorte filtrado':'')+'</div></div></div>'+
+    '<p class="heroi-sub">De '+captados+' leads captados, '+responderam+
+    ' responderam ao agente e '+projetos+' viraram projeto aberto.</p></div>'+
+  '<div class="kpis">'+
+    '<div class="kpi"><div class="lab">Leads captados</div><div class="n">'+captados+'</div></div>'+
+    '<div class="kpi"><div class="lab">Abordados</div><div class="n">'+abordados+'</div><div class="pe">'+pct(abordados,captados)+' dos captados</div></div>'+
+    '<div class="kpi"><div class="lab">Responderam</div><div class="n">'+responderam+'</div><div class="pe">'+pct(responderam,abordados)+' dos abordados</div></div>'+
+    '<div class="kpi"><div class="lab">Qualificados</div><div class="n">'+qualificados+'</div><div class="pe">'+pct(qualificados,captados)+' dos captados</div></div>'+
+    '<div class="kpi"><div class="lab">Projetos anotados</div><div class="n">'+projetos+'</div><div class="pe">'+pct(projetos,bom)+' dos BOM</div></div>'+
+  '</div>'+
+  '<div class="card"><h2>Funil, do lead captado ao projeto aberto</h2>'+
+    '<p class="leg">Números absolutos. A nota abaixo do rótulo é a conversão em relação à etapa imediatamente anterior.</p>'+funil+'</div>'+
+  avisoProjeto+
+  '<div class="duas">'+
+    '<div class="card"><h2>Como o agente classificou</h2>'+
+    '<p class="leg">Clique numa barra para filtrar a página inteira por ela.</p>'+
+    barra({rot:'BOM',valor:bom,max:maxQual,cor:'var(--serie)',sw:'bom',nota:NOTA_QUAL.BOM,clic:1,dim:'qual',chave:'BOM',ativa:F.qual==='BOM'})+
+    barra({rot:'POTENCIAL_FUTURO',valor:futuro,max:maxQual,cor:'var(--serie)',sw:'fut',nota:NOTA_QUAL.POTENCIAL_FUTURO,clic:1,dim:'qual',chave:'POTENCIAL_FUTURO',ativa:F.qual==='POTENCIAL_FUTURO'})+
+    barra({rot:'RUIM',valor:ruim,max:maxQual,cor:'var(--serie)',sw:'ruim',nota:NOTA_QUAL.RUIM,clic:1,dim:'qual',chave:'RUIM',ativa:F.qual==='RUIM'})+
+    barra({rot:'NAO_LEAD',valor:naoLead,max:maxQual,cor:'var(--serie)',sw:'nao',nota:NOTA_QUAL.NAO_LEAD,clic:1,dim:'qual',chave:'NAO_LEAD',ativa:F.qual==='NAO_LEAD'})+
+    '</div>'+
+    '<div class="card"><h2>Onde o lead parou</h2>'+
+    '<p class="leg">Estados exclusivos. "Sem resposta" mede o template de abordagem. "Parou de responder" mede o agente perdendo a pessoa no meio da conversa.</p>'+
+    ['sem_resposta','abandonou','em_conversa','qualificado','nao_abordado'].map(e=>
+      barra({rot:ROT_EST[e],valor:n(e),max:maxEst,cor:'var(--serie)',nota:NOTA_EST[e],clic:1,dim:'estado',chave:e,ativa:F.estado===e})).join('')+
+    '</div></div>'+
+  '<div class="card"><h2>Origem dos leads</h2>'+
+    '<p class="leg">bot-planilha é abordagem ativa a partir do formulário. bot-site é receptivo, quem chegou pelo chat ou pelo WhatsApp.</p>'+
+    (origens.map(o=>barra({rot:o[0],valor:o[1],max:maxOrig,cor:corOrigem(o[0]),clic:1,dim:'origem',chave:o[0],ativa:F.origem===o[0]})).join('')
+      || '<p class="leg">Sem leads neste recorte.</p>')+'</div>'+
+  (D.orfas ? '<div class="alerta"><b>'+D.orfas+' conversa'+(D.orfas>1?'s':'')+
+    ' de WhatsApp sem linha na planilha.</b> São pessoas que chamaram o número direto, sem nunca preencher o formulário. Elas conversam com o agente e podem até acionar o comercial por e-mail, mas não têm linha na planilha, então não aparecem em nenhum número desta página. O painel está subestimando o canal receptivo enquanto isso não for corrigido.'+
+    (D.sessoesSite?' Além delas, '+D.sessoesSite+' sessão'+(D.sessoesSite>1?'ões':'')+' do chat do site, que por natureza não têm telefone.':'')+'</div>' : '')+
+  '<div class="card"><h2>Tabela completa</h2>'+
+    '<p class="leg">'+L.length+' lead'+(L.length===1?'':'s')+' neste recorte. Nenhum número desta página depende de passar o mouse em nada, tudo está aqui.</p>'+
+    '<div class="rolar"><table><thead><tr><th>Entrada</th><th>Nome</th><th>Empresa</th><th>Origem</th>'+
+    '<th>Estado</th><th>Qualificação</th><th>Msgs</th><th>Recebidas</th><th>Projeto</th><th>Motivo</th></tr></thead>'+
+    '<tbody>'+(tab||'<tr><td colspan="10">Nenhum lead neste recorte.</td></tr>')+'</tbody></table></div></div>';
+  const origensTodas=[...new Set(D.leads.map(l=>l.origem))].sort();
+  chips('f-origem','origem',origensTodas);
+  chips('f-qual','qual',['BOM','POTENCIAL_FUTURO','RUIM','NAO_LEAD']);
+  chips('f-estado','estado',['sem_resposta','abandonou','em_conversa','qualificado','nao_abordado'],v=>ROT_EST[v]);
+  document.getElementById('limpar').hidden = !ativo;
+}
+// Um clique numa barra ou num chip mexe no MESMO filtro. A linha de filtros
+// acima e a fonte da verdade, e a pagina inteira re-renderiza contra o recorte.
+document.addEventListener('click', ev => {
+  const alvo = ev.target.closest('[data-f]');
+  if (alvo) { const d=alvo.dataset.f, v=alvo.dataset.v; F[d] = (F[d]===v ? null : v); render(); return; }
+  if (ev.target.id === 'limpar') { F.origem=F.qual=F.estado=null; render(); }
+});
+render();
+</script>
+</body></html>`;
+    res.type('text/html; charset=utf-8').send(html);
+  } catch(e) {
+    console.error('Erro no /painel:', e.message);
+    res.status(500).type('text/plain; charset=utf-8').send('Erro ao montar o painel: ' + e.message);
+  }
+});
+// ══════════════════════════════════════════════════════════════
 // ── ROTA: CORRIGIR OS CABEÇALHOS DA PLANILHA (rodar uma vez)
 // ══════════════════════════════════════════════════════════════
 // Escreve a linha 1 inteira com os nomes corretos. Corrige o typo TELEFONTE,
@@ -1556,17 +2347,17 @@ app.get('/corrigir-cabecalhos', async (req, res) => {
     if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
     const antes = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A1:N1`
+      range: `${SHEET_NAME}!A1:O1`
     });
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A1:N1`,
+      range: `${SHEET_NAME}!A1:O1`,
       valueInputOption: 'RAW',
       requestBody: { values: [CABECALHO_PADRAO] }
     });
     const depois = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A1:N1`
+      range: `${SHEET_NAME}!A1:O1`
     });
     console.log('Cabecalhos corrigidos na planilha de leads');
     res.json({
@@ -1640,7 +2431,7 @@ app.get('/sheet-test', async (req, res) => {
     if (!sheets) return res.status(500).json({ status: 'sem cliente sheets' });
     const r = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A1:N1`
+      range: `${SHEET_NAME}!A1:O1`
     });
     res.json({ status: 'planilha acessível', cabecalho: r.data.values ? r.data.values[0] : [] });
   } catch(e) {
@@ -1668,7 +2459,7 @@ app.get('/sheet-write-test', async (req, res) => {
     try {
       const r = await sheets.spreadsheets.values.get({
         spreadsheetId: SPREADSHEET_ID,
-        range: `${SHEET_NAME}!A1:N1`
+        range: `${SHEET_NAME}!A1:O1`
       });
       resultado.leitura = 'ok';
       resultado.cabecalho = r.data.values ? r.data.values[0] : [];
@@ -1903,6 +2694,9 @@ app.listen(PORT, async () => {
   console.log('Corrigir cabecalhos da planilha: GET /corrigir-cabecalhos');
   console.log('Metricas dos leads da internet: GET /metricas?mes=8&ano=2026');
   console.log('Inbox de auditoria: GET /inbox?chave=... ' + (process.env.INBOX_KEY ? '(INBOX_KEY configurada)' : '(FALTA criar INBOX_KEY no Render)'));
+  console.log('Painel analitico: GET /painel?chave=...&mes=8&ano=2026');
+  console.log('Instagram: webhook em /instagram · teste em GET /instagram-test ' +
+    (IG_TOKEN && IG_USER_ID ? '(configurado)' : '(FALTAM INSTAGRAM_TOKEN e INSTAGRAM_USER_ID)'));
   console.log('Ativar o numero: GET /phone-register');
   console.log('Ver vinculo do webhook: GET /webhook-status');
   console.log('Criar vinculo do webhook: GET /webhook-subscribe');

@@ -1328,6 +1328,222 @@ app.get('/metricas', async (req, res) => {
   }
 });
 // ══════════════════════════════════════════════════════════════
+// ── INBOX: AUDITORIA DAS CONVERSAS
+// ══════════════════════════════════════════════════════════════
+// A Cloud API nao tem caixa de entrada. A aba Conversas guarda o historico,
+// mas e um log cru, uma linha por mensagem, sem agrupar por pessoa.
+// Esta rota le a aba e monta uma pagina de leitura, agrupada por contato,
+// em formato de dialogo, mais recente primeiro, com atualizacao automatica.
+//
+// PROTECAO: o backend e publico. Esta pagina mostra nome, telefone, CNPJ e o
+// teor das conversas, entao exige a chave da variavel INBOX_KEY do Render.
+// Se a variavel nao existir, a rota se RECUSA a servir, em vez de abrir sem
+// protecao. Falha fechada, nunca aberta.
+function escaparHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+// Converte "DD/MM/AAAA HH:MM:SS" em milissegundos, para ordenar.
+function parseDataBrasil(str) {
+  try {
+    const [d, h] = String(str || '').split(' ');
+    const [dia, mes, ano] = d.split('/').map(Number);
+    const [hh, mm, ss] = (h || '0:0:0').split(':').map(Number);
+    const t = new Date(ano, mes - 1, dia, hh || 0, mm || 0, ss || 0).getTime();
+    return isNaN(t) ? 0 : t;
+  } catch(e) {
+    return 0;
+  }
+}
+app.get('/inbox', async (req, res) => {
+  const chaveEsperada = process.env.INBOX_KEY;
+  if (!chaveEsperada) {
+    return res.status(503).type('text/plain; charset=utf-8').send(
+      'Inbox desativada.\n\n' +
+      'Falta criar a variavel INBOX_KEY no Render.\n' +
+      'Render, servico ginger-backend, aba Environment, Add Environment Variable.\n' +
+      '  Key:   INBOX_KEY\n' +
+      '  Value: uma senha qualquer escolhida por voce\n\n' +
+      'Depois de salvar, acesse /inbox?chave=SUA_SENHA\n\n' +
+      'Enquanto a variavel nao existir, esta pagina nao abre. Isso e proposital:\n' +
+      'ela mostra nome, telefone, CNPJ e o conteudo das conversas dos leads, e o\n' +
+      'backend esta aberto na internet.'
+    );
+  }
+  if (req.query.chave !== chaveEsperada) {
+    console.log('Tentativa de acesso ao /inbox com chave incorreta');
+    return res.status(403).type('text/plain; charset=utf-8').send('Chave invalida.');
+  }
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return res.status(500).type('text/plain').send('Sheets indisponivel');
+    // Historico das conversas
+    const rc = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_CONVERSAS}!A:E`
+    });
+    const linhas = (rc.data.values || []).slice(1);
+    // Cadastro dos leads, para casar nome e empresa com o numero
+    const rl = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!A:N`
+    });
+    const leads = {};
+    for (const row of (rl.data.values || []).slice(1)) {
+      const k = chaveNumero(row[3] || '');
+      if (!k) continue;
+      leads[k] = {
+        nome: row[1] || '', empresa: row[4] || '', cnpj: row[7] || '',
+        status: row[8] || '', qualificacao: row[10] || '', motivo: row[11] || '',
+        projeto: row[12] || ''
+      };
+    }
+    // Agrupa por contato. Numero do WhatsApp usa a chave canonica, para nao
+    // separar a mesma pessoa por causa do nono digito. Conversa do site nao
+    // tem numero, entao a propria sessao vira a chave.
+    const filtroNumero = req.query.numero ? chaveNumero(req.query.numero) : null;
+    const grupos = {};
+    for (const l of linhas) {
+      const bruto = l[1] || '';
+      const chave = bruto.startsWith('site-') ? bruto : (chaveNumero(bruto) || bruto);
+      if (!chave) continue;
+      if (filtroNumero && chave !== filtroNumero) continue;
+      if (!grupos[chave]) grupos[chave] = { chave, numeroBruto: bruto, mensagens: [] };
+      grupos[chave].mensagens.push({
+        quando: l[0] || '', ts: parseDataBrasil(l[0]),
+        direcao: (l[2] || '').toLowerCase(), texto: l[3] || '', origem: l[4] || ''
+      });
+    }
+    const contatos = Object.values(grupos);
+    for (const c of contatos) {
+      c.mensagens.sort((a, b) => a.ts - b.ts);
+      c.ultima = c.mensagens.length ? c.mensagens[c.mensagens.length - 1].ts : 0;
+      c.lead = leads[c.chave] || null;
+      c.recebidas = c.mensagens.filter(m => m.direcao === 'recebida').length;
+    }
+    contatos.sort((a, b) => b.ultima - a.ultima);
+    const LIMITE_CONTATOS = parseInt(req.query.limite) || 40;
+    const mostrados = contatos.slice(0, LIMITE_CONTATOS);
+    const totalRespondeu = contatos.filter(c => c.recebidas > 0).length;
+    const badge = (txt, cor) => `<span class="tag" style="background:${cor}">${escaparHtml(txt)}</span>`;
+    const corQual = q => {
+      const u = String(q || '').toUpperCase();
+      if (u === 'BOM') return '#1B7F4B';
+      if (u === 'POTENCIAL_FUTURO') return '#B8860B';
+      if (u === 'NAO_LEAD') return '#7A7A7A';
+      if (u === 'RUIM') return '#C0392B';
+      return '#47166B';
+    };
+    const blocos = mostrados.map(c => {
+      const L = c.lead;
+      const titulo = L && L.nome ? `${L.nome}${L.empresa ? ' · ' + L.empresa : ''}` : (c.chave.startsWith('site-') ? 'Visitante do site' : c.chave);
+      const tags = [];
+      if (L && L.qualificacao) tags.push(badge(L.qualificacao, corQual(L.qualificacao)));
+      if (L && L.status) tags.push(badge(L.status, '#6B4E8C'));
+      if (L && L.projeto) tags.push(badge('projeto ' + L.projeto, '#1B7F4B'));
+      if (c.recebidas === 0) tags.push(badge('sem resposta', '#B0B0B0'));
+      const msgs = c.mensagens.map(m => {
+        const eu = m.direcao === 'enviada';
+        return `<div class="msg ${eu ? 'saiu' : 'entrou'}">
+          <div class="bolha">${escaparHtml(m.texto).replace(/\n/g, '<br>')}</div>
+          <div class="hora">${escaparHtml(m.quando)}${m.origem ? ' · ' + escaparHtml(m.origem) : ''}</div>
+        </div>`;
+      }).join('');
+      return `<details class="contato"${filtroNumero ? ' open' : ''}>
+        <summary>
+          <span class="nome">${escaparHtml(titulo)}</span>
+          <span class="tags">${tags.join(' ')}</span>
+          <span class="meta">${c.mensagens.length} msg${L && L.cnpj ? ' · CNPJ ' + escaparHtml(L.cnpj) : ''} · ${escaparHtml(c.numeroBruto)}</span>
+        </summary>
+        ${L && L.motivo ? `<div class="motivo">Motivo registrado: ${escaparHtml(L.motivo)}</div>` : ''}
+        <div class="thread">${msgs}</div>
+      </details>`;
+    }).join('');
+    const html = `<!DOCTYPE html>
+<html lang="pt-BR"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Inbox Ginger</title>
+<style>
+  :root { --roxo:#47166B; --lilas:#F2EAF7; --creme:#F8F8F8; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+         background:var(--creme); color:#222; font-size:15px; }
+  header { background:var(--roxo); color:#fff; padding:14px 18px; position:sticky; top:0; z-index:10; }
+  header h1 { margin:0; font-size:17px; font-weight:600; }
+  header .resumo { font-size:13px; opacity:.85; margin-top:3px; }
+  main { max-width:900px; margin:0 auto; padding:14px; }
+  .contato { background:#fff; border:1px solid #E3D9EC; border-radius:8px; margin-bottom:10px; }
+  summary { cursor:pointer; padding:12px 14px; list-style:none; }
+  summary::-webkit-details-marker { display:none; }
+  summary:hover { background:var(--lilas); }
+  .nome { font-weight:600; color:var(--roxo); margin-right:8px; }
+  .tags { display:inline; }
+  .tag { display:inline-block; color:#fff; font-size:11px; padding:2px 7px;
+         border-radius:10px; margin-right:4px; vertical-align:middle; }
+  .meta { display:block; color:#777; font-size:12px; margin-top:4px; }
+  .motivo { padding:8px 14px; background:var(--lilas); font-size:13px; color:#4a4a4a; }
+  .thread { padding:12px 14px 16px; border-top:1px solid #EEE8F3; }
+  .msg { margin-bottom:10px; display:flex; flex-direction:column; }
+  .msg.entrou { align-items:flex-start; }
+  .msg.saiu { align-items:flex-end; }
+  .bolha { max-width:78%; padding:9px 12px; border-radius:12px; white-space:pre-wrap;
+           word-break:break-word; line-height:1.4; }
+  .entrou .bolha { background:#EFEFEF; border-bottom-left-radius:3px; }
+  .saiu .bolha { background:var(--lilas); border-bottom-right-radius:3px; }
+  .hora { font-size:11px; color:#999; margin-top:3px; }
+  .vazio { padding:30px; text-align:center; color:#888; }
+  footer { text-align:center; color:#999; font-size:12px; padding:18px; }
+</style>
+</head><body>
+<header>
+  <h1>Inbox Ginger</h1>
+  <div class="resumo">${contatos.length} contatos · ${totalRespondeu} responderam · mostrando ${mostrados.length} · atualiza sozinha a cada 30s · ${escaparHtml(agoraBrasil())}</div>
+</header>
+<main>
+  ${blocos || '<div class="vazio">Nenhuma conversa registrada ainda.</div>'}
+  ${contatos.length > mostrados.length ? `<div class="vazio">Mais ${contatos.length - mostrados.length} contatos mais antigos. Acrescente &limite=200 no endereço para ver todos.</div>` : ''}
+</main>
+<footer>Clique num contato para abrir a conversa. Uso interno, contém dados pessoais de leads.</footer>
+<script>
+  // Guarda quais conversas estão abertas e a posição da rolagem, para o
+  // refresh automático não fechar o que você está lendo.
+  var ABERTOS = 'inbox_abertos';
+  document.querySelectorAll('details.contato').forEach(function(d, i) {
+    var k = d.querySelector('.meta') ? d.querySelector('.meta').textContent : String(i);
+    try { if ((sessionStorage.getItem(ABERTOS) || '').split('|||').indexOf(k) > -1) d.open = true; } catch(e) {}
+    d.addEventListener('toggle', function() {
+      try {
+        var lista = (sessionStorage.getItem(ABERTOS) || '').split('|||').filter(Boolean);
+        var pos = lista.indexOf(k);
+        if (d.open && pos === -1) lista.push(k);
+        if (!d.open && pos > -1) lista.splice(pos, 1);
+        sessionStorage.setItem(ABERTOS, lista.join('|||'));
+      } catch(e) {}
+    });
+  });
+  try {
+    var y = sessionStorage.getItem('inbox_scroll');
+    if (y) window.scrollTo(0, parseInt(y));
+  } catch(e) {}
+  setTimeout(function() {
+    try { sessionStorage.setItem('inbox_scroll', String(window.scrollY)); } catch(e) {}
+    location.reload();
+  }, 30000);
+</script>
+</body></html>`;
+    res.type('text/html; charset=utf-8').send(html);
+  } catch(e) {
+    console.error('Erro no /inbox:', e.message);
+    res.status(500).type('text/plain; charset=utf-8').send('Erro ao montar a inbox: ' + e.message);
+  }
+});
+// ══════════════════════════════════════════════════════════════
 // ── ROTA: CORRIGIR OS CABEÇALHOS DA PLANILHA (rodar uma vez)
 // ══════════════════════════════════════════════════════════════
 // Escreve a linha 1 inteira com os nomes corretos. Corrige o typo TELEFONTE,
@@ -1686,6 +1902,7 @@ app.listen(PORT, async () => {
   console.log('Previa do backlog: GET /backlog-previa?dias=45');
   console.log('Corrigir cabecalhos da planilha: GET /corrigir-cabecalhos');
   console.log('Metricas dos leads da internet: GET /metricas?mes=8&ano=2026');
+  console.log('Inbox de auditoria: GET /inbox?chave=... ' + (process.env.INBOX_KEY ? '(INBOX_KEY configurada)' : '(FALTA criar INBOX_KEY no Render)'));
   console.log('Ativar o numero: GET /phone-register');
   console.log('Ver vinculo do webhook: GET /webhook-status');
   console.log('Criar vinculo do webhook: GET /webhook-subscribe');

@@ -993,11 +993,34 @@ async function garantirLinhaDoContato({ idCanal, telefone, nome, origem }) {
     await setLinhaCache(idCanal, rowIndex);
     return rowIndex;
   }
-  rowIndex = await criarLinhaLead({
-    nome: nome || '', telefone: telefone || '', origem, idCanal,
-    status: 'em atendimento'
-  });
-  if (rowIndex) await setLinhaCache(idCanal, rowIndex);
+  // TRAVA CONTRA LINHA REPETIDA.
+  // Quando alguem manda tres mensagens seguidas, a Meta entrega os tres
+  // webhooks quase juntos. Sem trava, os tres passam pelas buscas acima antes
+  // de qualquer um gravar, e a planilha ganha tres linhas identicas para o
+  // mesmo contato. Foi o que aconteceu com a hildaestéticista no Instagram,
+  // linhas 52, 53 e 54, todas 16:44:07 do mesmo dia.
+  // Quem pega a trava cria a linha. Os outros esperam o cache aparecer.
+  const trava = `linha_lock:${idCanal}`;
+  const peguei = await redis('SET', trava, '1', 'NX', 'EX', 30);
+  if (!peguei) {
+    for (let tentativa = 0; tentativa < 20; tentativa++) {
+      await delay(500);
+      rowIndex = await getLinhaCache(idCanal);
+      if (rowIndex) return rowIndex;
+    }
+    // A trava existe mas o cache nunca apareceu. Melhor tentar criar do que
+    // devolver nada e perder o lead: linha repetida se conserta, lead perdido nao.
+    console.log(`Trava de linha esgotou a espera para ${idCanal}, seguindo mesmo assim`);
+  }
+  try {
+    rowIndex = await criarLinhaLead({
+      nome: nome || '', telefone: telefone || '', origem, idCanal,
+      status: 'em atendimento'
+    });
+    if (rowIndex) await setLinhaCache(idCanal, rowIndex);
+  } finally {
+    if (peguei) await redis('DEL', trava);
+  }
   return rowIndex;
 }
 async function atualizarIdCanal(rowIndex, idCanal) {
@@ -2691,6 +2714,158 @@ app.get('/diagnostico-linhas', async (req, res) => {
     });
   } catch(e) {
     console.error('Erro no diagnóstico de linhas:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+// ══════════════════════════════════════════════════════════════
+// ── ROTA: RECUPERAR CONVERSAS ÓRFÃS
+// ══════════════════════════════════════════════════════════════
+// Ate hoje, so ganhava linha na planilha quem ja estava na lista de abordagem
+// ativa ou preencheu o formulario do site. Quem chamou no WhatsApp por conta
+// propria conversou, foi qualificado e gerou e-mail para o comercial SEM
+// nunca existir na planilha. O painel le a planilha, entao esses leads sao
+// invisiveis nas metricas. Esta rota devolve uma linha para cada um deles.
+// Ela nao inventa classificacao: cria a linha com o historico que existe e
+// deixa a qualificacao em branco, para o comercial ou o proprio agente
+// preencherem. Inventar um BOM aqui seria pior do que a falta que ele faz.
+app.get('/recuperar-orfaos', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const aplicar = req.query.aplicar === '1';
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
+    const [rl, rc] = await Promise.all([
+      sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A:O` }),
+      sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_CONVERSAS}!A:E` })
+    ]);
+    // Todas as chaves que JA tem linha, pelo telefone ou pelo ID do canal.
+    const comLinha = new Set();
+    for (const row of (rl.data.values || []).slice(1)) {
+      const kTel = chaveNumero(row[3] || '');
+      const kCanal = (row[COL_ID_CANAL] || '').trim();
+      if (kTel) comLinha.add(kTel);
+      if (kCanal) comLinha.add(kCanal);
+    }
+    // Agrupa o historico por contato.
+    const porChave = {};
+    for (const l of (rc.data.values || []).slice(1)) {
+      const bruto = l[1] || '';
+      if (!bruto || bruto === 'teste-escrita') continue;
+      const chave = chaveConversa(bruto);
+      // Sessao anonima do site nao vira lead: nao tem telefone nem nome, e
+      // cada visita gera uma sessao nova. Viraria lixo na planilha.
+      if (!chave || chave === '55' || chave.startsWith('site-')) continue;
+      if (comLinha.has(chave)) continue;
+      if (!porChave[chave]) porChave[chave] = { chave, primeira: '', recebidas: 0, enviadas: 0, origem: '', amostra: '' };
+      const g = porChave[chave];
+      const ts = parseDataBrasil(l[0]);
+      if (!g.primeira || ts < parseDataBrasil(g.primeira)) g.primeira = l[0] || '';
+      if ((l[2] || '').toLowerCase() === 'recebida') {
+        g.recebidas++;
+        if (!g.amostra) g.amostra = String(l[3] || '').substring(0, 80);
+      } else g.enviadas++;
+      if (!g.origem && (l[4] || '').trim()) g.origem = (l[4] || '').trim();
+    }
+    const orfaos = Object.values(porChave).sort(
+      (a, b) => parseDataBrasil(a.primeira) - parseDataBrasil(b.primeira));
+    const monta = o => {
+      const ehIg = o.chave.startsWith(IG_PREFIXO), ehFb = o.chave.startsWith(FB_PREFIXO);
+      return {
+        data: o.primeira || agoraBrasil(),
+        telefone: (ehIg || ehFb) ? '' : o.chave,
+        idCanal: o.chave,
+        origem: o.origem || (ehIg ? 'bot-instagram' : ehFb ? 'bot-facebook' : 'bot-site'),
+        status: 'recuperado do histórico',
+        canal: canalDaChave(o.chave),
+        mensagens: o.recebidas + o.enviadas, recebidas: o.recebidas,
+        primeiraFala: o.amostra
+      };
+    };
+    const previa = orfaos.map(monta);
+    if (!aplicar) {
+      return res.json({
+        modo: 'PRÉVIA, nada foi alterado',
+        vaiCriar: previa.length,
+        contatos: previa,
+        comoAplicar: 'acrescente &aplicar=1 no endereço',
+        oQueAcontece: 'Cada contato ganha UMA linha nova na planilha, com a data da ' +
+          'primeira mensagem, o telefone e o canal. A qualificação fica em branco de ' +
+          'propósito: o agente preenche na próxima mensagem, ou o comercial preenche à mão ' +
+          'pelo e-mail que já recebeu. Nenhuma linha existente é tocada.'
+      });
+    }
+    const criadas = [];
+    for (const o of previa) {
+      const rowIndex = await criarLinhaLead(o);
+      if (rowIndex) {
+        await setLinhaCache(o.idCanal, rowIndex);
+        criadas.push({ linha: rowIndex, ...o });
+      }
+    }
+    console.log(`Recuperação de órfãos: ${criadas.length} linha(s) criadas`);
+    res.json({
+      modo: 'APLICADO', criadas: criadas.length, contatos: criadas,
+      proximoPasso: 'Abra o painel. Esses contatos passam a aparecer em "Leads captados". ' +
+        'Para contá-los como BOM, preencha a coluna K com a classificação do e-mail que você recebeu.'
+    });
+  } catch(e) {
+    console.error('Erro ao recuperar órfãos:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+// ══════════════════════════════════════════════════════════════
+// ── ROTA: MARCAR LINHAS REPETIDAS DO MESMO CONTATO
+// ══════════════════════════════════════════════════════════════
+// Tres mensagens seguidas geravam tres linhas para o mesmo ID de canal. A
+// trava em garantirLinhaDoContato impede novos casos; esta rota trata os que
+// ja estao na planilha. Ela NAO apaga nada: marca as repetidas na coluna I,
+// para que parem de inflar a contagem de leads captados sem perder o registro.
+app.get('/marcar-duplicados-canal', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const aplicar = req.query.aplicar === '1';
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A:O`
+    });
+    const rows = r.data.values || [];
+    const vistos = {}, repetidas = [];
+    for (let i = 1; i < rows.length; i++) {
+      const id = (rows[i][COL_ID_CANAL] || '').trim();
+      if (!id) continue;
+      if (!vistos[id]) { vistos[id] = i + 1; continue; }
+      // Nunca marcar uma linha que ja tem classificacao: e a linha util.
+      if ((rows[i][10] || '').trim()) continue;
+      repetidas.push({
+        linha: i + 1, nome: rows[i][1] || '', idCanal: id,
+        primeiraLinhaDesseContato: vistos[id], statusAtual: rows[i][8] || ''
+      });
+    }
+    if (!aplicar) {
+      return res.json({
+        modo: 'PRÉVIA, nada foi alterado', vaiMarcar: repetidas.length, linhas: repetidas,
+        comoAplicar: 'acrescente &aplicar=1 no endereço',
+        oQueAcontece: 'A coluna I dessas linhas passa a dizer "linha repetida do mesmo contato". ' +
+          'Nada é apagado e a primeira linha de cada contato fica intacta.'
+      });
+    }
+    if (repetidas.length) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: SPREADSHEET_ID,
+        requestBody: {
+          valueInputOption: 'RAW',
+          data: repetidas.map(x => ({
+            range: `${SHEET_NAME}!I${x.linha}`,
+            values: [['linha repetida do mesmo contato']]
+          }))
+        }
+      });
+    }
+    console.log(`Duplicados por ID de canal: ${repetidas.length} linha(s) marcadas`);
+    res.json({ modo: 'APLICADO', marcadas: repetidas.length, linhas: repetidas });
+  } catch(e) {
+    console.error('Erro ao marcar duplicados:', e.message);
     res.status(500).json({ erro: e.message });
   }
 });

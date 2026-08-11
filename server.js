@@ -2639,6 +2639,74 @@ render();
   }
 });
 // ══════════════════════════════════════════════════════════════
+// ── ROTA: MIGRAR QUALIFICAÇÕES PRESAS NA COLUNA I
+// ══════════════════════════════════════════════════════════════
+// Ate a sessao 22, o bot gravava a classificacao na coluna I, a mesma que
+// guardava o estado operacional. A reestruturacao separou os dois eixos e a
+// classificacao passou para a coluna K, mas os dados ANTIGOS ficaram onde
+// estavam. Resultado: todo lead qualificado antes do deploy tem o "BOM" preso
+// na coluna errada, e o painel, que conta pela K, nao o enxerga.
+//
+// Esta rota e de mao unica e roda uma vez. Por padrao ela apenas MOSTRA o que
+// faria. Só muda a planilha com &aplicar=1.
+const CLASSIFICACOES_VALIDAS = ['BOM', 'POTENCIAL_FUTURO', 'RUIM', 'NAO_LEAD'];
+app.get('/migrar-qualificacao', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const aplicar = req.query.aplicar === '1';
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A:O`
+    });
+    const rows = r.data.values || [];
+    const mover = [], conflitos = [];
+    for (let i = 1; i < rows.length; i++) {
+      const statusI = (rows[i][8] || '').trim().toUpperCase();
+      const qualK = (rows[i][10] || '').trim();
+      if (!CLASSIFICACOES_VALIDAS.includes(statusI)) continue;
+      const info = { linha: i + 1, nome: rows[i][1] || '', empresa: rows[i][4] || '', classificacao: statusI };
+      // Se a K ja tem valor, nao sobrescreve: a K e mais nova e mais confiavel.
+      if (qualK) { conflitos.push({ ...info, jaNaColunaK: qualK }); continue; }
+      mover.push(info);
+    }
+    if (!aplicar) {
+      return res.json({
+        modo: 'PRÉVIA, nada foi alterado',
+        vaiMover: mover.length,
+        linhas: mover,
+        ignoradasPorJaTerValorEmK: conflitos,
+        comoAplicar: 'acrescente &aplicar=1 no endereço',
+        oQueAcontece: 'A classificação sai da coluna I e vai para a K. A coluna I ' +
+          'recebe "qualificado pelo agente", que é o estado operacional correspondente. ' +
+          'A coluna L, MOTIVO, fica como está.'
+      });
+    }
+    const data = [];
+    for (const m of mover) {
+      data.push({ range: `${SHEET_NAME}!I${m.linha}`, values: [['qualificado pelo agente']] });
+      data.push({ range: `${SHEET_NAME}!K${m.linha}`, values: [[m.classificacao]] });
+    }
+    if (data.length) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: SPREADSHEET_ID,
+        requestBody: { valueInputOption: 'RAW', data }
+      });
+    }
+    console.log(`Migração de qualificação: ${mover.length} linha(s) movidas da coluna I para a K`);
+    res.json({
+      modo: 'APLICADO',
+      movidas: mover.length,
+      linhas: mover,
+      ignoradasPorJaTerValorEmK: conflitos,
+      proximoPasso: 'Abra o painel: os números de agosto devem subir.'
+    });
+  } catch(e) {
+    console.error('Erro na migração de qualificação:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+// ══════════════════════════════════════════════════════════════
 // ── ROTA: SAÚDE DO SISTEMA
 // ══════════════════════════════════════════════════════════════
 // O modo de falha mais perigoso deste bot nao e um erro na tela, e o silencio.

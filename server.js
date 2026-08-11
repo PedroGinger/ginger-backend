@@ -41,11 +41,108 @@ const TEMPLATE_IDIOMA = 'pt_BR';
 const IG_TOKEN = process.env.INSTAGRAM_TOKEN;
 const IG_USER_ID = process.env.INSTAGRAM_USER_ID;
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || process.env.WHATSAPP_VERIFY_TOKEN;
+// ⚠️ HOST CORRETO, ERRO QUE JA CUSTOU UMA RODADA ⚠️
+// Existem dois caminhos para a API do Instagram e eles NAO compartilham host:
+//   "API setup with Instagram login"  → token do Instagram → graph.instagram.com
+//   "API setup with Facebook login"   → token de Pagina    → graph.facebook.com
+// A Ginger usa o primeiro. Mandar um token do Instagram para o graph.facebook.com
+// devolve "Invalid OAuth access token - Cannot parse access token", codigo 190,
+// que parece token invalido mas e endereco errado.
+const IG_BASE = `https://graph.instagram.com/${GRAPH_VERSION}`;
 // Prefixo da chave de conversa e do ID_CANAL. Mantem o identificador do
 // Instagram longe de qualquer codigo que espere telefone.
 const IG_PREFIXO = 'ig:';
 function chaveInstagram(igsid) {
   return IG_PREFIXO + String(igsid || '').replace(/\D/g, '');
+}
+// ══════════════════════════════════════════════════════════════
+// ── TOKEN DO INSTAGRAM: RENOVAÇÃO AUTOMÁTICA
+// ══════════════════════════════════════════════════════════════
+// O token de longa duracao do Instagram vale cerca de 60 dias. Quando vence,
+// o bot para de responder EM SILENCIO: nao ha erro visivel, nao ha aviso, as
+// mensagens simplesmente deixam de ser respondidas. Dois meses depois de ligar
+// o canal, isso vira um misterio de meio dia.
+//
+// A renovacao devolve um token NOVO, e o codigo nao consegue reescrever a
+// variavel de ambiente do Render. Entao o token vigente vive no Redis, e a
+// variavel de ambiente serve so como semente inicial.
+//
+// Regra da Meta: so da para renovar um token com mais de 24h de vida. Por isso
+// o boot NAO renova, apenas registra desde quando conhece o token. A rotina
+// diaria renova quando passa de 7 dias, o que mantem folga enorme ate os 60.
+let igTokenCache = null;
+let igTokenOrigem = 'ambiente';
+let igTokenVistoEm = null;
+async function tokenInstagram() {
+  if (igTokenCache) return igTokenCache;
+  const salvo = await redis('GET', 'ig:token');
+  if (salvo) {
+    igTokenCache = salvo;
+    igTokenOrigem = 'redis';
+    const ts = await redis('GET', 'ig:token_visto_em');
+    igTokenVistoEm = ts ? parseInt(ts) : null;
+    return igTokenCache;
+  }
+  igTokenCache = IG_TOKEN || null;
+  igTokenOrigem = 'ambiente';
+  return igTokenCache;
+}
+async function guardarTokenInstagram(tok, origem) {
+  igTokenCache = tok;
+  igTokenOrigem = origem;
+  igTokenVistoEm = Date.now();
+  await redis('SET', 'ig:token', tok);
+  await redis('SET', 'ig:token_visto_em', String(igTokenVistoEm));
+}
+function idadeTokenEmDias() {
+  if (!igTokenVistoEm) return null;
+  return Math.floor((Date.now() - igTokenVistoEm) / 86400000);
+}
+async function renovarTokenInstagram(motivo) {
+  const atual = await tokenInstagram();
+  if (!atual) return { ok: false, erro: 'nenhum token configurado' };
+  try {
+    const r = await fetch(
+      `https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=${encodeURIComponent(atual)}`
+    );
+    const d = await r.json();
+    if (!r.ok || d.error || !d.access_token) {
+      console.error(`⚠️ FALHA ao renovar o token do Instagram (${motivo}):`,
+        JSON.stringify(d).substring(0, 300));
+      return { ok: false, data: d };
+    }
+    await guardarTokenInstagram(d.access_token, 'redis');
+    const dias = Math.round((d.expires_in || 0) / 86400);
+    console.log(`Token do Instagram renovado (${motivo}). Nova validade: cerca de ${dias} dias.`);
+    return { ok: true, validadeDias: dias };
+  } catch(e) {
+    console.error(`⚠️ Erro de rede ao renovar o token do Instagram (${motivo}):`, e.message);
+    return { ok: false, erro: e.message };
+  }
+}
+// Primeira vez que o processo ve um token: registra a data, sem renovar.
+async function semearTokenInstagram() {
+  if (!IG_TOKEN) return;
+  const salvo = await redis('GET', 'ig:token');
+  if (salvo) {
+    await tokenInstagram();
+    console.log(`Token do Instagram: vindo do Redis, conhecido ha ${idadeTokenEmDias()} dia(s).`);
+    return;
+  }
+  await guardarTokenInstagram(IG_TOKEN, 'ambiente');
+  console.log('Token do Instagram: semeado a partir da variavel de ambiente. Primeira renovacao em 7 dias.');
+}
+// Rotina diaria de renovacao.
+async function rotinaTokenInstagram() {
+  if (!IG_TOKEN && !igTokenCache) return;
+  await tokenInstagram();
+  const dias = idadeTokenEmDias();
+  if (dias === null) { await semearTokenInstagram(); return; }
+  if (dias >= 7) {
+    await renovarTokenInstagram(`rotina diaria, token com ${dias} dias`);
+  } else {
+    console.log(`Token do Instagram com ${dias} dia(s), ainda nao precisa renovar.`);
+  }
 }
 // Chave usada para agrupar conversas na inbox e no painel. Numero de WhatsApp
 // vira chave canonica; Instagram e chat do site ja chegam com prefixo proprio
@@ -921,27 +1018,62 @@ async function atualizarIdCanal(rowIndex, idCanal) {
 // ══════════════════════════════════════════════════════════════
 // ── ENVIO PELO INSTAGRAM DIRECT
 // ══════════════════════════════════════════════════════════════
+async function chamarInstagram(caminho, opts) {
+  const tok = await tokenInstagram();
+  if (!tok) return { ok: false, status: 0, data: { erro: 'sem token' } };
+  const r = await fetch(`${IG_BASE}${caminho}`, {
+    ...(opts || {}),
+    headers: {
+      'Authorization': `Bearer ${tok}`,
+      'Content-Type': 'application/json',
+      ...((opts && opts.headers) || {})
+    }
+  });
+  const data = await r.json();
+  return { ok: r.ok && !data.error, status: r.status, data };
+}
 async function enviarInstagram(igsid, texto) {
-  if (!IG_TOKEN || !IG_USER_ID) {
+  if (!IG_USER_ID || !(await tokenInstagram())) {
     console.error('Instagram nao configurado: faltam INSTAGRAM_TOKEN e/ou INSTAGRAM_USER_ID');
     return { ok: false, erro: 'nao configurado' };
   }
   try {
-    const r = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${IG_USER_ID}/messages`, {
+    const r = await chamarInstagram(`/${IG_USER_ID}/messages`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${IG_TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ recipient: { id: igsid }, message: { text: texto } })
     });
-    const data = await r.json();
-    if (!r.ok || data.error) {
-      console.error('Erro ao enviar no Instagram:', JSON.stringify(data).substring(0, 500));
-      return { ok: false, data };
+    if (!r.ok) {
+      const cod = r.data && r.data.error && r.data.error.code;
+      // 10 e 551: fora da janela de 24h. Nao e defeito do bot, e regra da Meta.
+      if (cod === 10 || cod === 551) {
+        console.error(`Janela de 24h fechada no Instagram para ${igsid}. Só um humano pode reabrir.`);
+      } else if (cod === 190) {
+        console.error('⚠️ TOKEN DO INSTAGRAM INVÁLIDO OU VENCIDO. Renove em /instagram-status.');
+      } else {
+        console.error('Erro ao enviar no Instagram:', JSON.stringify(r.data).substring(0, 500));
+      }
+      return { ok: false, data: r.data };
     }
-    return { ok: true, data };
+    return { ok: true, data: r.data };
   } catch(e) {
     console.error('Falha de rede ao enviar no Instagram:', e.message);
     return { ok: false, erro: e.message };
   }
+}
+// Marca como visto e mostra "digitando", igual ao WhatsApp. Se a conta nao
+// suportar, falha em silencio sem atrapalhar a resposta.
+async function marcarVistoInstagram(igsid) {
+  if (!IG_USER_ID) return;
+  try {
+    await chamarInstagram(`/${IG_USER_ID}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ recipient: { id: igsid }, sender_action: 'mark_seen' })
+    });
+    await chamarInstagram(`/${IG_USER_ID}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ recipient: { id: igsid }, sender_action: 'typing_on' })
+    });
+  } catch(e) { /* indicador visual nunca derruba o atendimento */ }
 }
 // ══════════════════════════════════════════════════════════════
 // ── HISTÓRICO DE CONVERSAS NA PLANILHA
@@ -1423,15 +1555,10 @@ app.get('/instagram', (req, res) => {
 // Busca nome e @ do contato. Sem isso a inbox mostraria so o ID numerico e
 // ninguem consegue auditar conversa de "17841400000000000".
 async function perfilInstagram(igsid) {
-  if (!IG_TOKEN) return null;
   try {
-    const r = await fetch(
-      `https://graph.facebook.com/${GRAPH_VERSION}/${igsid}?fields=name,username`,
-      { headers: { 'Authorization': `Bearer ${IG_TOKEN}` } }
-    );
-    const d = await r.json();
-    if (!r.ok || d.error) return null;
-    return { nome: d.name || '', usuario: d.username || '' };
+    const r = await chamarInstagram(`/${igsid}?fields=name,username`);
+    if (!r.ok) return null;
+    return { nome: r.data.name || '', usuario: r.data.username || '' };
   } catch(e) {
     return null;
   }
@@ -1472,6 +1599,7 @@ app.post('/instagram', async (req, res) => {
       return;
     }
     console.log('Instagram, mensagem de', igsid, ':', texto.substring(0, 100));
+    await marcarVistoInstagram(igsid);
     await registrarConversa(chave, 'recebida', texto, 'bot-instagram');
     let historico = await getConversaChave(chave) || [];
     // A linha nasce no PRIMEIRO contato, nao na conclusao da qualificacao.
@@ -1548,33 +1676,69 @@ app.post('/instagram', async (req, res) => {
     console.error('Erro no webhook do Instagram:', error.message);
   }
 });
-// ── ROTA: TESTAR O INSTAGRAM (debug)
-// Confirma token e ID da conta sem mandar mensagem para ninguem.
+// ── Guarda de acesso reutilizavel para as rotas internas.
+// Antes so a inbox e o painel exigiam chave, e as rotas de diagnostico ficavam
+// abertas na internet. Nao mostravam conversa, mas informavam a quem
+// perguntasse quais integracoes existem e o nome da conta.
+function exigeChave(req, res) {
+  const esperada = process.env.INBOX_KEY;
+  if (!esperada) {
+    res.status(503).type('text/plain; charset=utf-8')
+      .send('Rota protegida desativada. Falta criar a variavel INBOX_KEY no Render.');
+    return false;
+  }
+  if (req.query.chave !== esperada) {
+    res.status(403).type('text/plain; charset=utf-8').send('Chave invalida.');
+    return false;
+  }
+  return true;
+}
+// ── ROTA: TESTAR O INSTAGRAM (protegida)
+// Confirma token e conta sem mandar mensagem para ninguem.
 // Com ?para=<IGSID>&texto=oi manda uma mensagem de teste.
 app.get('/instagram-test', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const tok = await tokenInstagram();
   const resultado = {
-    tokenConfigurado: !!IG_TOKEN,
+    host: IG_BASE,
+    tokenConfigurado: !!tok,
+    origemDoToken: igTokenOrigem,
+    idadeDoTokenEmDias: idadeTokenEmDias(),
     userIdConfigurado: !!IG_USER_ID,
     verifyTokenConfigurado: !!META_VERIFY_TOKEN
   };
-  if (!IG_TOKEN || !IG_USER_ID) {
+  if (!tok || !IG_USER_ID) {
     resultado.dica = 'Faltam INSTAGRAM_TOKEN e/ou INSTAGRAM_USER_ID no Render.';
     return res.status(503).json(resultado);
   }
-  try {
-    const r = await fetch(
-      `https://graph.facebook.com/${GRAPH_VERSION}/${IG_USER_ID}?fields=id,username,name`,
-      { headers: { 'Authorization': `Bearer ${IG_TOKEN}` } }
-    );
-    resultado.conta = await r.json();
-    resultado.status = r.status;
-  } catch(e) {
-    resultado.erro = e.message;
+  const r = await chamarInstagram('/me?fields=id,username,name');
+  resultado.status = r.status;
+  resultado.conta = r.data;
+  if (!r.ok && r.data && r.data.error && r.data.error.code === 190) {
+    resultado.diagnostico = 'Token rejeitado. Se a mensagem for "Cannot parse access token", ' +
+      'o token provavelmente é de outro caminho de API. Esta instalação usa Instagram login, ' +
+      'que fala com graph.instagram.com.';
   }
   if (req.query.para) {
     resultado.envioDeTeste = await enviarInstagram(req.query.para, req.query.texto || 'Teste do agente Ginger.');
   }
   res.json(resultado);
+});
+// ── ROTA: SITUAÇÃO E RENOVAÇÃO DO TOKEN DO INSTAGRAM (protegida)
+// Com ?renovar=1 força a renovação na hora, sem esperar a rotina diária.
+app.get('/instagram-status', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  await tokenInstagram();
+  const out = {
+    origemDoToken: igTokenOrigem,
+    idadeDoTokenEmDias: idadeTokenEmDias(),
+    renovaAutomaticamente: 'sim, rotina diária renova quando passa de 7 dias',
+    observacao: igTokenOrigem === 'ambiente'
+      ? 'O token ainda vem da variável de ambiente. Assim que a rotina rodar, ele passa a viver no Redis e a se renovar sozinho.'
+      : 'O token vigente está no Redis e se renova sozinho. A variável do Render é apenas a semente inicial.'
+  };
+  if (req.query.renovar === '1') out.renovacao = await renovarTokenInstagram('pedido manual');
+  res.json(out);
 });
 // ── ROTA: VERIFICAÇÃO MANUAL DA PLANILHA
 // Sem parametros: comportamento normal, so leads das ultimas 24h.
@@ -2335,6 +2499,82 @@ render();
   }
 });
 // ══════════════════════════════════════════════════════════════
+// ── ROTA: SAÚDE DO SISTEMA
+// ══════════════════════════════════════════════════════════════
+// O modo de falha mais perigoso deste bot nao e um erro na tela, e o silencio.
+// Se o saldo da Anthropic acabar, o Redis cair, a permissao da planilha mudar
+// ou o token do Instagram vencer, nada quebra visivelmente: o bot simplesmente
+// para de responder e ninguem percebe ate alguem reclamar dias depois.
+// Esta rota checa tudo de uma vez e diz, em uma palavra, se esta tudo de pe.
+app.get('/saude', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const checagens = [];
+  const add = (nome, ok, detalhe, critico = true) =>
+    checagens.push({ nome, situacao: ok ? 'ok' : (critico ? 'FALHOU' : 'atenção'), detalhe });
+  // Redis
+  try {
+    const p = await redis('PING');
+    add('Redis (memória das conversas)', p === 'PONG', p === 'PONG' ? 'respondendo' : 'sem resposta');
+  } catch(e) { add('Redis (memória das conversas)', false, e.message); }
+  // Planilha, leitura e escrita
+  try {
+    const sheets = await getSheetsClient();
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1:O1`
+    });
+    const cab = (r.data.values && r.data.values[0]) || [];
+    add('Planilha, leitura', cab.length > 0, `${cab.length} colunas no cabeçalho`);
+    add('Planilha, coluna ID_CANAL', cab[COL_ID_CANAL] === 'ID_CANAL',
+      cab[COL_ID_CANAL] === 'ID_CANAL' ? 'presente' : 'FALTA rodar /corrigir-cabecalhos');
+  } catch(e) { add('Planilha', false, e.message); }
+  // Claude
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 5, messages: [{ role: 'user', content: 'ok' }] })
+    });
+    const d = await r.json();
+    add('Claude (cérebro do agente)', !!d.content, d.content ? 'respondendo' :
+      (d.error && d.error.message || 'sem resposta').substring(0, 120));
+  } catch(e) { add('Claude (cérebro do agente)', false, e.message); }
+  // WhatsApp
+  try {
+    const r = await fetch(
+      `https://graph.facebook.com/${GRAPH_VERSION}/${WA_PHONE_ID}?fields=quality_rating,status`,
+      { headers: { 'Authorization': `Bearer ${WA_TOKEN}` } }
+    );
+    const d = await r.json();
+    const conectado = d.status === 'CONNECTED';
+    add('WhatsApp, número', conectado, `status ${d.status || '?'}, qualidade ${d.quality_rating || '?'}`);
+    add('WhatsApp, qualidade', d.quality_rating === 'GREEN',
+      `${d.quality_rating || 'desconhecida'}`, false);
+  } catch(e) { add('WhatsApp, número', false, e.message); }
+  // Instagram
+  if (IG_TOKEN || igTokenCache) {
+    const r = await chamarInstagram('/me?fields=id,username');
+    add('Instagram, token', r.ok, r.ok ? `conta @${r.data.username}` :
+      ((r.data.error && r.data.error.message) || 'rejeitado').substring(0, 140));
+    const dias = idadeTokenEmDias();
+    add('Instagram, idade do token', dias === null || dias < 55,
+      dias === null ? 'ainda não registrada' : `${dias} dia(s), renova sozinho aos 7`, false);
+  } else {
+    add('Instagram', false, 'não configurado', false);
+  }
+  const falhas = checagens.filter(c => c.situacao === 'FALHOU');
+  const atencoes = checagens.filter(c => c.situacao === 'atenção');
+  res.status(falhas.length ? 500 : 200).json({
+    resumo: falhas.length ? `${falhas.length} FALHA(S)` : (atencoes.length ? 'ok, com pontos de atenção' : 'tudo ok'),
+    verificadoEm: agoraBrasil(),
+    falhas: falhas.map(f => f.nome),
+    checagens
+  });
+});
+// ══════════════════════════════════════════════════════════════
 // ── ROTA: CORRIGIR OS CABEÇALHOS DA PLANILHA (rodar uma vez)
 // ══════════════════════════════════════════════════════════════
 // Escreve a linha 1 inteira com os nomes corretos. Corrige o typo TELEFONTE,
@@ -2673,6 +2913,10 @@ setInterval(() => {
 setInterval(() => {
   verificarNovosLeads();
 }, INTERVALO_VERIFICACAO_MS);
+// ── RENOVAÇÃO AUTOMÁTICA DO TOKEN DO INSTAGRAM (uma vez por dia)
+setInterval(() => {
+  rotinaTokenInstagram().catch(e => console.error('Rotina do token do Instagram falhou:', e.message));
+}, 24 * 60 * 60 * 1000);
 // ── INICIAR SERVIDOR
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
@@ -2695,8 +2939,10 @@ app.listen(PORT, async () => {
   console.log('Metricas dos leads da internet: GET /metricas?mes=8&ano=2026');
   console.log('Inbox de auditoria: GET /inbox?chave=... ' + (process.env.INBOX_KEY ? '(INBOX_KEY configurada)' : '(FALTA criar INBOX_KEY no Render)'));
   console.log('Painel analitico: GET /painel?chave=...&mes=8&ano=2026');
-  console.log('Instagram: webhook em /instagram · teste em GET /instagram-test ' +
-    (IG_TOKEN && IG_USER_ID ? '(configurado)' : '(FALTAM INSTAGRAM_TOKEN e INSTAGRAM_USER_ID)'));
+  console.log('Instagram: webhook em /instagram · teste em GET /instagram-test?chave=... ' +
+    (IG_TOKEN && IG_USER_ID ? '(configurado, host ' + IG_BASE + ')' : '(FALTAM INSTAGRAM_TOKEN e INSTAGRAM_USER_ID)'));
+  console.log('Situacao do token do Instagram: GET /instagram-status?chave=...');
+  console.log('Saude geral do sistema: GET /saude?chave=...');
   console.log('Ativar o numero: GET /phone-register');
   console.log('Ver vinculo do webhook: GET /webhook-status');
   console.log('Criar vinculo do webhook: GET /webhook-subscribe');
@@ -2706,5 +2952,8 @@ app.listen(PORT, async () => {
   if (REDIS_URL) {
     const teste = await redis('PING');
     console.log('Redis PING:', teste === 'PONG' ? 'CONECTADO' : 'FALHOU');
+    // Registra desde quando conhecemos o token, sem renovar: a Meta exige que
+    // o token tenha mais de 24h de vida para aceitar uma renovacao.
+    await semearTokenInstagram();
   }
 });

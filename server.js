@@ -2355,6 +2355,20 @@ app.get('/painel', async (req, res) => {
       --sobe:#2EA96B; --desce:#E0655C;
     }
   }
+  /* Os MESMOS valores escuros sob o escopo do botao. A regra da media query
+     cobre a preferencia do sistema operacional; esta cobre a escolha manual,
+     e ela precisa vencer nos dois sentidos. O :not() acima deixa o modo claro
+     forcado ganhar do sistema escuro, e o :where() mantem a media query com
+     peso baixo o bastante para nao atropelar o botao. */
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --page:#141019; --surface:#1A1620;
+    --ink:#FFFFFF; --ink2:#C9C3D1; --muted:#9A93A5;
+    --grid:#332B3D; --trilho:#26202F; --borda:rgba(255,255,255,0.10);
+    --roxo:#D4B4E5; --on-ink:#1A1620; --serie:#A87FC4; --serie-laranja:#DD5F2C;
+    --f1:#653F88; --f2:#8054A8; --f3:#9C6FC4; --f4:#B98FD1; --f5:#D4B4E5;
+    --sobe:#2EA96B; --desce:#E0655C;
+  }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--page); color:var(--ink);
     font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; font-size:15px; }
@@ -2429,6 +2443,7 @@ app.get('/painel', async (req, res) => {
       <button class="chip" id="btMes">Mês</button>
       <button class="chip" id="btTudo">Tudo</button>
       <span class="dir">
+        <button class="chip" id="btTema" title="Alternar entre fundo claro e escuro"></button>
         <button class="chip" id="btCsv">Baixar CSV</button>
         <button class="chip" id="limpar" hidden>Limpar filtros</button>
       </span>
@@ -2443,6 +2458,30 @@ app.get('/painel', async (req, res) => {
 <script>
 const D = ${JSON.stringify(DADOS)};
 const F = { origem:null, qual:null, estado:null };
+// ── Alternador claro / escuro ──────────────────────────────────────────────
+// Tres estados de propósito: "sistema" respeita a preferência do computador,
+// e os outros dois forçam. Sem o estado "sistema", quem nunca clicar no botão
+// fica preso no que eu escolhi como padrão, em vez de no que ele já configurou.
+// Valores possiveis: 'sistema', 'dark', 'light'. Os dois ultimos sao os
+// mesmos nomes que o CSS espera em data-theme.
+function temaSalvo(){ try { return localStorage.getItem('painel_tema') || 'sistema'; } catch(e){ return 'sistema'; } }
+function estaEscuro(){
+  const t = document.documentElement.dataset.theme;
+  if (t === 'dark') return true;
+  if (t === 'light') return false;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+function aplicaTema(t){
+  const raiz = document.documentElement;
+  if (t === 'sistema') raiz.removeAttribute('data-theme'); else raiz.dataset.theme = t;
+  try { localStorage.setItem('painel_tema', t); } catch(e) {}
+  const bt = document.getElementById('btTema');
+  if (bt) {
+    const escuro = estaEscuro();
+    bt.textContent = escuro ? 'Fundo claro' : 'Fundo escuro';
+    bt.title = 'Agora em modo ' + (escuro ? 'escuro' : 'claro') + '. Clique para trocar.';
+  }
+}
 let MES = D.mesInicial, ANO = D.anoInicial, TODOS = false;
 const MESES=['','Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 const ROT_EST={qualificado:'Qualificado',sem_resposta:'Sem resposta',abandonou:'Parou de responder',em_conversa:'Em conversa',nao_abordado:'Não abordado'};
@@ -2572,6 +2611,7 @@ document.addEventListener('click',ev=>{
  else if(id==='prox'){TODOS=false;if(MES===12){MES=1;ANO++;}else MES++;render();}
  else if(id==='btMes'){TODOS=false;render();}
  else if(id==='btTudo'){TODOS=true;render();}
+ else if(id==='btTema'){ aplicaTema(estaEscuro()?'light':'dark'); }
  else if(id==='btCsv'){
   const arr=aplicaFiltros(base());
   const b=new Blob([csv(arr)],{type:'text/csv;charset=utf-8;'});
@@ -2581,6 +2621,14 @@ document.addEventListener('click',ev=>{
   a.click(); URL.revokeObjectURL(a.href);
  }
 });
+// Se o usuario nunca escolheu, segue o sistema. Se escolheu, a escolha manda.
+aplicaTema(temaSalvo());
+// Quando esta em "sistema" e o computador troca de tema, o rotulo acompanha.
+try {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (temaSalvo() === 'sistema') aplicaTema('sistema');
+  });
+} catch(e) {}
 render();
 </script>
 </body></html>`;

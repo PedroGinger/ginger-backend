@@ -49,6 +49,27 @@ const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || process.env.WHATSAPP_
 // devolve "Invalid OAuth access token - Cannot parse access token", codigo 190,
 // que parece token invalido mas e endereco errado.
 const IG_BASE = `https://graph.instagram.com/${GRAPH_VERSION}`;
+// ══════════════════════════════════════════════════════════════
+// ── FACEBOOK MESSENGER
+// ══════════════════════════════════════════════════════════════
+// Variaveis necessarias no Render:
+//   FACEBOOK_PAGE_TOKEN → token de acesso da Pagina
+//   FACEBOOK_PAGE_ID    → ID numerico da Pagina
+//   META_VERIFY_TOKEN   → o mesmo do Instagram, ja configurado
+//
+// Ao contrario do Instagram, o Messenger fala com graph.facebook.com, porque
+// o token e de Pagina e nao de conta do Instagram. Sao dois hosts diferentes
+// no mesmo arquivo de proposito, e trocar um pelo outro devolve o erro 190.
+//
+// Token de Pagina gerado por usuario de sistema nao expira, entao aqui nao
+// existe rotina de renovacao como no Instagram.
+const FB_TOKEN = process.env.FACEBOOK_PAGE_TOKEN;
+const FB_PAGE_ID = process.env.FACEBOOK_PAGE_ID;
+const FB_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
+const FB_PREFIXO = 'fb:';
+function chaveFacebook(psid) {
+  return FB_PREFIXO + String(psid || '').replace(/\D/g, '');
+}
 // Prefixo da chave de conversa e do ID_CANAL. Mantem o identificador do
 // Instagram longe de qualquer codigo que espere telefone.
 const IG_PREFIXO = 'ig:';
@@ -150,12 +171,13 @@ async function rotinaTokenInstagram() {
 function chaveConversa(bruto) {
   const s = String(bruto || '').trim();
   if (!s) return '';
-  if (s.startsWith('site-') || s.startsWith(IG_PREFIXO)) return s;
+  if (s.startsWith('site-') || s.startsWith(IG_PREFIXO) || s.startsWith(FB_PREFIXO)) return s;
   return chaveNumero(s) || s;
 }
 function canalDaChave(chave) {
   const s = String(chave || '');
   if (s.startsWith(IG_PREFIXO)) return 'Instagram';
+  if (s.startsWith(FB_PREFIXO)) return 'Facebook';
   if (s.startsWith('site-')) return 'Chat do site';
   return 'WhatsApp';
 }
@@ -353,33 +375,10 @@ const INTERVALO_VERIFICACAO_MS = 30 * 60 * 1000;
 // esperando. Ajuste aqui se quiser voltar ao ritmo antigo (20000 / 45000).
 const RESPOSTA_DELAY_MIN_MS = 8000;
 const RESPOSTA_DELAY_MAX_MS = 18000;
-// ══════════════════════════════════════════════════════════════
-// ── FILTRO DE CNAE — ESQUELETO (preencher quando a lista do jurídico chegar)
-// ══════════════════════════════════════════════════════════════
-const CNAE_QUALIFICA_DIRETO = [
-  // '2063100', // ex.: fabricação de cosméticos
-];
-const CNAE_QUALIFICA_COM_VOLUME = {
-  // '1113501': 8,   // ex.: cervejaria só qualifica se volume desejado (kg) >= 8
-};
-const CNAE_NAO_QUALIFICA = [
-  // '5611201', // ex.: restaurante
-];
-function avaliarCnae(cnae) {
-  const listasVazias =
-    CNAE_QUALIFICA_DIRETO.length === 0 &&
-    Object.keys(CNAE_QUALIFICA_COM_VOLUME).length === 0 &&
-    CNAE_NAO_QUALIFICA.length === 0;
-  if (listasVazias) return { status: 'sem_lista' };
-  if (!cnae) return { status: 'sem_cnae' };
-  const c = String(cnae).replace(/\D/g, '');
-  if (CNAE_NAO_QUALIFICA.includes(c)) return { status: 'bloqueado' };
-  if (CNAE_QUALIFICA_DIRETO.includes(c)) return { status: 'direto' };
-  if (Object.prototype.hasOwnProperty.call(CNAE_QUALIFICA_COM_VOLUME, c)) {
-    return { status: 'com_volume', volumeMinimo: CNAE_QUALIFICA_COM_VOLUME[c] };
-  }
-  return { status: 'sem_cnae' };
-}
+// Nota da sessao 22: o esqueleto de filtro por CNAE foi REMOVIDO. Ele estava
+// inativo desde a sessao 19 esperando uma lista do juridico, e o Pedro decidiu
+// que essa lista nao vai existir. Quem faz esse trabalho agora e o criterio 4
+// da regua (segmento atendido), avaliado pelo agente na conversa.
 // ══════════════════════════════════════════════════════════════
 // ── PRÉ-FILTRO DE ABORDAGEM: CNPJ JÁ DECLARADO INEXISTENTE
 // ══════════════════════════════════════════════════════════════
@@ -1060,6 +1059,71 @@ async function enviarInstagram(igsid, texto) {
     return { ok: false, erro: e.message };
   }
 }
+// ══════════════════════════════════════════════════════════════
+// ── ENVIO PELO FACEBOOK MESSENGER
+// ══════════════════════════════════════════════════════════════
+async function chamarFacebook(caminho, opts) {
+  if (!FB_TOKEN) return { ok: false, status: 0, data: { erro: 'sem token de Pagina' } };
+  const sep = caminho.indexOf('?') > -1 ? '&' : '?';
+  const r = await fetch(`${FB_BASE}${caminho}${sep}access_token=${encodeURIComponent(FB_TOKEN)}`, {
+    ...(opts || {}),
+    headers: { 'Content-Type': 'application/json', ...((opts && opts.headers) || {}) }
+  });
+  const data = await r.json();
+  return { ok: r.ok && !data.error, status: r.status, data };
+}
+async function enviarFacebook(psid, texto) {
+  if (!FB_TOKEN || !FB_PAGE_ID) {
+    console.error('Facebook nao configurado: faltam FACEBOOK_PAGE_TOKEN e/ou FACEBOOK_PAGE_ID');
+    return { ok: false, erro: 'nao configurado' };
+  }
+  try {
+    const r = await chamarFacebook(`/${FB_PAGE_ID}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        recipient: { id: psid },
+        messaging_type: 'RESPONSE',
+        message: { text: texto }
+      })
+    });
+    if (!r.ok) {
+      const cod = r.data && r.data.error && r.data.error.code;
+      if (cod === 10 || cod === 551) {
+        console.error(`Janela de 24h fechada no Messenger para ${psid}. Só um humano pode reabrir.`);
+      } else if (cod === 190) {
+        console.error('⚠️ TOKEN DA PÁGINA DO FACEBOOK INVÁLIDO OU VENCIDO.');
+      } else {
+        console.error('Erro ao enviar no Messenger:', JSON.stringify(r.data).substring(0, 500));
+      }
+      return { ok: false, data: r.data };
+    }
+    return { ok: true, data: r.data };
+  } catch(e) {
+    console.error('Falha de rede ao enviar no Messenger:', e.message);
+    return { ok: false, erro: e.message };
+  }
+}
+async function marcarVistoFacebook(psid) {
+  if (!FB_PAGE_ID) return;
+  try {
+    await chamarFacebook(`/${FB_PAGE_ID}/messages`, {
+      method: 'POST', body: JSON.stringify({ recipient: { id: psid }, sender_action: 'mark_seen' })
+    });
+    await chamarFacebook(`/${FB_PAGE_ID}/messages`, {
+      method: 'POST', body: JSON.stringify({ recipient: { id: psid }, sender_action: 'typing_on' })
+    });
+  } catch(e) { /* indicador visual nunca derruba o atendimento */ }
+}
+async function perfilFacebook(psid) {
+  try {
+    const r = await chamarFacebook(`/${psid}?fields=first_name,last_name`);
+    if (!r.ok) return null;
+    const nome = [r.data.first_name, r.data.last_name].filter(Boolean).join(' ').trim();
+    return { nome, usuario: '' };
+  } catch(e) {
+    return null;
+  }
+}
 // Marca como visto e mostra "digitando", igual ao WhatsApp. Se a conta nao
 // suportar, falha em silencio sem atrapalhar a resposta.
 async function marcarVistoInstagram(igsid) {
@@ -1538,20 +1602,6 @@ app.post('/whatsapp-cloud', async (req, res) => {
     console.error('Erro WhatsApp Cloud:', error.message);
   }
 });
-// ══════════════════════════════════════════════════════════════
-// ── WEBHOOK INSTAGRAM DIRECT — VERIFICAÇÃO (GET)
-// ══════════════════════════════════════════════════════════════
-app.get('/instagram', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-  if (mode === 'subscribe' && token === META_VERIFY_TOKEN) {
-    console.log('Webhook do Instagram verificado pela Meta com sucesso');
-    return res.status(200).send(challenge);
-  }
-  console.log('Falha na verificação do webhook do Instagram. Token não confere.');
-  return res.sendStatus(403);
-});
 // Busca nome e @ do contato. Sem isso a inbox mostraria so o ID numerico e
 // ninguem consegue auditar conversa de "17841400000000000".
 async function perfilInstagram(igsid) {
@@ -1564,116 +1614,188 @@ async function perfilInstagram(igsid) {
   }
 }
 // ══════════════════════════════════════════════════════════════
-// ── WEBHOOK INSTAGRAM DIRECT — MENSAGENS (POST)
+// ── ATENDIMENTO COMPARTILHADO: INSTAGRAM E MESSENGER
 // ══════════════════════════════════════════════════════════════
+// Os dois canais usam o mesmo formato de webhook da Meta e devem se comportar
+// de forma identica. Uma funcao so, para que uma correcao feita hoje no
+// Instagram nao deixe o Messenger para tras amanha. O que muda entre eles vem
+// por parametro: como enviar, como marcar visto, como ler o perfil, e a nota
+// de contexto que explica ao agente onde ele esta.
+async function atenderCanalMeta(cfg) {
+  const { psid, texto, chave, canal, origem, enviar, marcarVisto, perfil, notaDeContexto } = cfg;
+  await marcarVisto(psid);
+  await registrarConversa(chave, 'recebida', texto, origem);
+  let historico = await getConversaChave(chave) || [];
+  // A linha nasce no PRIMEIRO contato, nao na conclusao da qualificacao.
+  // Se esperasse o bloco de lead, quem conversa e some antes do fim
+  // continuaria invisivel, que e exatamente o buraco que fechamos.
+  const perfilInicial = historico.length ? null : await perfil(psid);
+  await garantirLinhaDoContato({
+    idCanal: chave, telefone: '',
+    nome: perfilInicial && (perfilInicial.nome || perfilInicial.usuario) || '',
+    origem
+  });
+  if (!historico.length) {
+    const nome = perfilInicial && (perfilInicial.nome || perfilInicial.usuario) || '';
+    historico.push({
+      role: 'user',
+      content: `[CONTEXTO INTERNO — não mencionar ao contato]\n` + notaDeContexto +
+        (nome ? `\nNome do perfil: ${nome}` : '') +
+        (perfilInicial && perfilInicial.usuario ? `\nUsuário: @${perfilInicial.usuario}` : '')
+    });
+    historico.push({ role: 'assistant', content: 'Entendido.' });
+  }
+  historico.push({ role: 'user', content: texto });
+  if (historico.length > 20) historico = historico.slice(-20);
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1000,
+      system: SYSTEM_PROMPT,
+      messages: historico.filter(m => m.role && m.content)
+    })
+  });
+  const data = await response.json();
+  if (!data.content) console.log(`CLAUDE ERRO /${canal}:`, JSON.stringify(data).substring(0, 800));
+  const raw = data.content?.[0]?.text || 'Não consegui processar. Pode repetir?';
+  const regex = /%%%LEAD_DATA%%%([\s\S]*?)%%%END_LEAD_DATA%%%/;
+  const match = raw.match(regex);
+  let leadDetectado = null;
+  if (match) {
+    try {
+      const parsed = JSON.parse(match[1].trim());
+      leadDetectado = await tratarBlocoLead(parsed, {
+        idCanal: chave,
+        telefone: (parsed.telefone || '').trim() && parsed.telefone.trim() !== '-' ? parsed.telefone : '',
+        nomeFallback: perfilInicial && (perfilInicial.nome || perfilInicial.usuario) || '',
+        origem, canal
+      });
+    } catch(e) {
+      console.log(`Erro ao parsear lead do ${canal}:`, e.message);
+    }
+  }
+  const resposta = raw.replace(regex, '').trim();
+  historico.push({ role: 'assistant', content: raw });
+  await saveConversaChave(chave, historico);
+  await delayHumanizado();
+  const envio = await enviar(psid, resposta);
+  console.log(`Envio no ${canal}:`, envio.ok ? 'ok' : 'FALHOU');
+  if (envio.ok) await registrarConversa(chave, 'enviada', resposta, origem);
+  if (leadDetectado) await enviarEmailLead(leadDetectado, `${psid} (${canal})`);
+}
+// Extrai o evento de mensagem util de um webhook no formato Messenger, ou
+// devolve null quando o evento deve ser ignorado. Os motivos de ignorar sao
+// os mesmos nos dois canais, entao a decisao mora num lugar so.
+function eventoDeMensagem(body, idDaConta) {
+  const ev = body?.entry?.[0]?.messaging?.[0];
+  if (!ev || !ev.message) return null;
+  // ECHO: a Meta devolve para o webhook TODA mensagem que a propria conta
+  // envia. Sem esta trava o bot le a propria resposta como se fosse do
+  // contato e conversa sozinho, em loop, gastando credito da Anthropic.
+  if (ev.message.is_echo) return null;
+  const psid = ev.sender && ev.sender.id;
+  if (!psid) return null;
+  if (idDaConta && String(psid) === String(idDaConta)) return null;
+  return { psid, mid: ev.message.mid, texto: ev.message.text, mensagem: ev.message };
+}
+const NOTA_INSTAGRAM =
+  'Esta conversa chegou pelo Instagram Direct da Ginger. O público do Instagram é ' +
+  'majoritariamente consumidor final, então a REGRA DE ENTRADA sobre CNPJ tende a ser ' +
+  'decisiva mais cedo que no WhatsApp. Aplique a REGRA ZERO e a REGRA DE ENTRADA ' +
+  'normalmente, com o mesmo cuidado e a mesma cordialidade. Não peça telefone logo de ' +
+  'cara, o contato já está falando com você por aqui.';
+const NOTA_FACEBOOK =
+  'Esta conversa chegou pelo Messenger da página da Ginger no Facebook. O público tende ' +
+  'a ser consumidor final ou pequeno empreendedor, então a REGRA DE ENTRADA sobre CNPJ ' +
+  'tende a ser decisiva cedo. Aplique a REGRA ZERO e a REGRA DE ENTRADA normalmente, com ' +
+  'o mesmo cuidado e a mesma cordialidade. Não peça telefone logo de cara, o contato já ' +
+  'está falando com você por aqui.';
+// ══════════════════════════════════════════════════════════════
+// ── WEBHOOK INSTAGRAM DIRECT
+// ══════════════════════════════════════════════════════════════
+app.get('/instagram', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  if (mode === 'subscribe' && token === META_VERIFY_TOKEN) {
+    console.log('Webhook do Instagram verificado pela Meta com sucesso');
+    return res.status(200).send(req.query['hub.challenge']);
+  }
+  console.log('Falha na verificação do webhook do Instagram. Token não confere.');
+  return res.sendStatus(403);
+});
 app.post('/instagram', async (req, res) => {
   console.log('WEBHOOK INSTAGRAM:', JSON.stringify(req.body).substring(0, 700));
   res.status(200).json({ ok: true });
   try {
-    const entry = req.body?.entry?.[0];
-    const ev = entry?.messaging?.[0];
+    const ev = eventoDeMensagem(req.body, IG_USER_ID);
     if (!ev) return;
-    // ECHO: a Meta devolve para o webhook TODA mensagem que a propria conta
-    // envia. Sem esta trava o bot le a propria resposta como se fosse do lead
-    // e conversa sozinho, em loop, gastando credito da Anthropic.
-    if (ev.message && ev.message.is_echo) return;
-    // Eventos de leitura, entrega, reacao e postback nao sao mensagem.
-    if (!ev.message) return;
-    const igsid = ev.sender && ev.sender.id;
-    if (!igsid) return;
-    // Ignora eventos em que a propria conta e a remetente.
-    if (IG_USER_ID && String(igsid) === String(IG_USER_ID)) return;
-    const mid = ev.message.mid;
-    if (await jaProcessouMensagem(mid)) {
-      console.log('Evento de Instagram duplicado ignorado:', mid);
+    if (await jaProcessouMensagem(ev.mid)) {
+      console.log('Evento de Instagram duplicado ignorado:', ev.mid);
       return;
     }
-    const chave = chaveInstagram(igsid);
-    let texto = ev.message.text;
-    // Midia, figurinha, audio, resposta de story: o agente so le texto.
-    if (!texto || !texto.trim()) {
-      if (ev.message.attachments || ev.message.is_unsupported) {
-        console.log('Mídia recebida no Instagram de', igsid);
-        await enviarInstagram(igsid, 'Oi! Consigo ler só mensagens de texto por aqui. Pode escrever para mim o que você precisa?');
+    if (!ev.texto || !ev.texto.trim()) {
+      if (ev.mensagem.attachments || ev.mensagem.is_unsupported) {
+        console.log('Mídia recebida no Instagram de', ev.psid);
+        await enviarInstagram(ev.psid, 'Oi! Consigo ler só mensagens de texto por aqui. Pode escrever para mim o que você precisa?');
       }
       return;
     }
-    console.log('Instagram, mensagem de', igsid, ':', texto.substring(0, 100));
-    await marcarVistoInstagram(igsid);
-    await registrarConversa(chave, 'recebida', texto, 'bot-instagram');
-    let historico = await getConversaChave(chave) || [];
-    // A linha nasce no PRIMEIRO contato, nao na conclusao da qualificacao.
-    // Se esperasse o bloco de lead, quem conversa e some antes do fim
-    // continuaria invisivel, que e exatamente o buraco que estamos fechando.
-    const perfilInicial = historico.length ? null : await perfilInstagram(igsid);
-    await garantirLinhaDoContato({
-      idCanal: chave, telefone: '',
-      nome: perfilInicial && (perfilInicial.nome || perfilInicial.usuario) || '',
-      origem: 'bot-instagram'
+    console.log('Instagram, mensagem de', ev.psid, ':', ev.texto.substring(0, 100));
+    await atenderCanalMeta({
+      psid: ev.psid, texto: ev.texto, chave: chaveInstagram(ev.psid),
+      canal: 'instagram', origem: 'bot-instagram',
+      enviar: enviarInstagram, marcarVisto: marcarVistoInstagram, perfil: perfilInstagram,
+      notaDeContexto: NOTA_INSTAGRAM
     });
-    // Na primeira mensagem, injeta o contexto do canal. O prompt e o mesmo do
-    // WhatsApp, entao o agente precisa saber onde esta para nao prometer o que
-    // o canal nao faz e para ler o publico corretamente.
-    if (!historico.length) {
-      const perfil = perfilInicial;
-      const nome = perfil && (perfil.nome || perfil.usuario) || '';
-      historico.push({
-        role: 'user',
-        content: `[CONTEXTO INTERNO — não mencionar ao contato]\n` +
-          `Esta conversa chegou pelo Instagram Direct da Ginger.\n` +
-          (nome ? `Nome do perfil: ${nome}\n` : '') +
-          (perfil && perfil.usuario ? `Usuário: @${perfil.usuario}\n` : '') +
-          `O público do Instagram é majoritariamente consumidor final, então a REGRA DE ENTRADA sobre CNPJ tende a ser decisiva mais cedo que no WhatsApp. Aplique a REGRA ZERO e a REGRA DE ENTRADA normalmente, com o mesmo cuidado e a mesma cordialidade. Não peça telefone logo de cara, o contato já está falando com você por aqui.`
-      });
-      historico.push({ role: 'assistant', content: 'Entendido.' });
-    }
-    historico.push({ role: 'user', content: texto });
-    if (historico.length > 20) historico = historico.slice(-20);
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1000,
-        system: SYSTEM_PROMPT,
-        messages: historico.filter(m => m.role && m.content)
-      })
-    });
-    const data = await response.json();
-    if (!data.content) console.log('CLAUDE ERRO /instagram:', JSON.stringify(data).substring(0, 800));
-    const raw = data.content?.[0]?.text || 'Não consegui processar. Pode repetir?';
-    const regex = /%%%LEAD_DATA%%%([\s\S]*?)%%%END_LEAD_DATA%%%/;
-    const match = raw.match(regex);
-    let leadDetectado = null;
-    if (match) {
-      try {
-        const parsed = JSON.parse(match[1].trim());
-        const perfil = await perfilInstagram(igsid);
-        leadDetectado = await tratarBlocoLead(parsed, {
-          idCanal: chave,
-          telefone: (parsed.telefone || '').trim() && parsed.telefone.trim() !== '-' ? parsed.telefone : '',
-          nomeFallback: perfil && (perfil.nome || perfil.usuario) || '',
-          origem: 'bot-instagram',
-          canal: 'instagram'
-        });
-      } catch(e) {
-        console.log('Erro ao parsear lead do Instagram:', e.message);
-      }
-    }
-    const resposta = raw.replace(regex, '').trim();
-    historico.push({ role: 'assistant', content: raw });
-    await saveConversaChave(chave, historico);
-    await delayHumanizado();
-    const envio = await enviarInstagram(igsid, resposta);
-    console.log('Envio no Instagram:', envio.ok ? 'ok' : 'FALHOU');
-    if (envio.ok) await registrarConversa(chave, 'enviada', resposta, 'bot-instagram');
-    if (leadDetectado) await enviarEmailLead(leadDetectado, '@' + igsid + ' (Instagram)');
   } catch(error) {
     console.error('Erro no webhook do Instagram:', error.message);
+  }
+});
+// ══════════════════════════════════════════════════════════════
+// ── WEBHOOK FACEBOOK MESSENGER
+// ══════════════════════════════════════════════════════════════
+app.get('/facebook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  if (mode === 'subscribe' && token === META_VERIFY_TOKEN) {
+    console.log('Webhook do Messenger verificado pela Meta com sucesso');
+    return res.status(200).send(req.query['hub.challenge']);
+  }
+  console.log('Falha na verificação do webhook do Messenger. Token não confere.');
+  return res.sendStatus(403);
+});
+app.post('/facebook', async (req, res) => {
+  console.log('WEBHOOK MESSENGER:', JSON.stringify(req.body).substring(0, 700));
+  res.status(200).json({ ok: true });
+  try {
+    const ev = eventoDeMensagem(req.body, FB_PAGE_ID);
+    if (!ev) return;
+    if (await jaProcessouMensagem(ev.mid)) {
+      console.log('Evento do Messenger duplicado ignorado:', ev.mid);
+      return;
+    }
+    if (!ev.texto || !ev.texto.trim()) {
+      if (ev.mensagem.attachments || ev.mensagem.is_unsupported) {
+        console.log('Mídia recebida no Messenger de', ev.psid);
+        await enviarFacebook(ev.psid, 'Oi! Consigo ler só mensagens de texto por aqui. Pode escrever para mim o que você precisa?');
+      }
+      return;
+    }
+    console.log('Messenger, mensagem de', ev.psid, ':', ev.texto.substring(0, 100));
+    await atenderCanalMeta({
+      psid: ev.psid, texto: ev.texto, chave: chaveFacebook(ev.psid),
+      canal: 'facebook', origem: 'bot-facebook',
+      enviar: enviarFacebook, marcarVisto: marcarVistoFacebook, perfil: perfilFacebook,
+      notaDeContexto: NOTA_FACEBOOK
+    });
+  } catch(error) {
+    console.error('Erro no webhook do Messenger:', error.message);
   }
 });
 // ── Guarda de acesso reutilizavel para as rotas internas.
@@ -1721,6 +1843,33 @@ app.get('/instagram-test', async (req, res) => {
   }
   if (req.query.para) {
     resultado.envioDeTeste = await enviarInstagram(req.query.para, req.query.texto || 'Teste do agente Ginger.');
+  }
+  res.json(resultado);
+});
+// ── ROTA: TESTAR O MESSENGER (protegida)
+// Com ?para=<PSID>&texto=oi manda uma mensagem de teste.
+app.get('/facebook-test', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const resultado = {
+    host: FB_BASE,
+    tokenConfigurado: !!FB_TOKEN,
+    pageIdConfigurado: !!FB_PAGE_ID,
+    verifyTokenConfigurado: !!META_VERIFY_TOKEN
+  };
+  if (!FB_TOKEN || !FB_PAGE_ID) {
+    resultado.dica = 'Faltam FACEBOOK_PAGE_TOKEN e/ou FACEBOOK_PAGE_ID no Render.';
+    return res.status(503).json(resultado);
+  }
+  const r = await chamarFacebook(`/${FB_PAGE_ID}?fields=id,name,username`);
+  resultado.status = r.status;
+  resultado.pagina = r.data;
+  if (!r.ok && r.data && r.data.error && r.data.error.code === 190) {
+    resultado.diagnostico = 'Token rejeitado. Confirme que é um token de PÁGINA, ' +
+      'não o token do Instagram: o Messenger fala com graph.facebook.com e o ' +
+      'Instagram com graph.instagram.com.';
+  }
+  if (req.query.para) {
+    resultado.envioDeTeste = await enviarFacebook(req.query.para, req.query.texto || 'Teste do agente Ginger.');
   }
   res.json(resultado);
 });
@@ -2032,7 +2181,8 @@ app.get('/inbox', async (req, res) => {
       const dataEntrada = (L && L.data) ? String(L.data).split(' ')[0]
         : (c.mensagens.length ? String(c.mensagens[0].quando).split(' ')[0] : '');
       const tags = [];
-      tags.push(badge(canal, canal === 'Instagram' ? '#C13584' : canal === 'Chat do site' ? '#8A8792' : '#128C7E'));
+      const corCanal = { Instagram: '#C13584', Facebook: '#1877F2', 'Chat do site': '#8A8792', WhatsApp: '#128C7E' };
+      tags.push(badge(canal, corCanal[canal] || '#6E6E6E'));
       if (L && L.qualificacao) tags.push(badge(L.qualificacao, corQual(L.qualificacao)));
       if (L && L.status) tags.push(badge(L.status, '#6B4E8C'));
       if (L && L.projeto) tags.push(badge('projeto ' + L.projeto, '#1B7F4B'));
@@ -2565,6 +2715,14 @@ app.get('/saude', async (req, res) => {
   } else {
     add('Instagram', false, 'não configurado', false);
   }
+  // Facebook Messenger
+  if (FB_TOKEN && FB_PAGE_ID) {
+    const r = await chamarFacebook(`/${FB_PAGE_ID}?fields=id,name`);
+    add('Messenger, token da Página', r.ok, r.ok ? `página ${r.data.name}` :
+      ((r.data.error && r.data.error.message) || 'rejeitado').substring(0, 140));
+  } else {
+    add('Messenger', false, 'não configurado', false);
+  }
   const falhas = checagens.filter(c => c.situacao === 'FALHOU');
   const atencoes = checagens.filter(c => c.situacao === 'atenção');
   res.status(falhas.length ? 500 : 200).json({
@@ -2941,6 +3099,8 @@ app.listen(PORT, async () => {
   console.log('Painel analitico: GET /painel?chave=...&mes=8&ano=2026');
   console.log('Instagram: webhook em /instagram · teste em GET /instagram-test?chave=... ' +
     (IG_TOKEN && IG_USER_ID ? '(configurado, host ' + IG_BASE + ')' : '(FALTAM INSTAGRAM_TOKEN e INSTAGRAM_USER_ID)'));
+  console.log('Messenger: webhook em /facebook · teste em GET /facebook-test?chave=... ' +
+    (FB_TOKEN && FB_PAGE_ID ? '(configurado, host ' + FB_BASE + ')' : '(FALTAM FACEBOOK_PAGE_TOKEN e FACEBOOK_PAGE_ID)'));
   console.log('Situacao do token do Instagram: GET /instagram-status?chave=...');
   console.log('Saude geral do sistema: GET /saude?chave=...');
   console.log('Ativar o numero: GET /phone-register');

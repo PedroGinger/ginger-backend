@@ -1865,20 +1865,21 @@ app.get('/facebook-test', async (req, res) => {
     resultado.dica = 'Falta FACEBOOK_PAGE_TOKEN no Render.';
     return res.status(503).json(resultado);
   }
-  // Pergunta ao proprio token quem ele e, pedindo SO o id.
-  // Pedir "name" junto exige a permissao pages_read_engagement, que nao tem
-  // relacao nenhuma com enviar mensagem. Testar o nome fazia o verificador
-  // acusar falha num canal que estava perfeitamente funcional.
-  const r = await chamarFacebook('/me?fields=id');
+  // ⚠️ TESTE A CAPACIDADE, NAO O CADASTRO ⚠️
+  // Ler qualquer campo do no da Pagina, inclusive so o id, exige a permissao
+  // pages_read_engagement. Ela nao tem relacao alguma com enviar mensagem, e
+  // testar por ali fazia o verificador gritar falha num canal funcionando.
+  // A caixa de conversas depende de pages_messaging, que e EXATAMENTE a
+  // permissao que o bot usa. Se isso responde, o Messenger funciona.
+  const r = await chamarFacebook('/me/conversations?limit=1');
   resultado.status = r.status;
-  resultado.pagina = r.data;
+  resultado.podeConversar = r.ok;
   resultado.idConfigurado = FB_PAGE_ID || null;
-  if (r.ok) {
-    // O nome e enfeite, entao vem numa chamada separada que pode falhar em paz.
-    const n = await chamarFacebook('/me?fields=name');
-    resultado.nomeDaPagina = n.ok ? n.data.name
-      : 'indisponível, falta pages_read_engagement (não impede o envio de mensagens)';
-  }
+  if (!r.ok) resultado.erro = r.data;
+  // Nome e enfeite: vem numa chamada separada que pode falhar em paz.
+  const n = await chamarFacebook('/me?fields=name');
+  resultado.nomeDaPagina = n.ok ? n.data.name
+    : 'indisponível, falta pages_read_engagement (não impede o envio de mensagens)';
   if (r.ok && FB_PAGE_ID && String(r.data.id) !== String(FB_PAGE_ID)) {
     resultado.diagnostico = `O token pertence à página ${r.data.id}, mas FACEBOOK_PAGE_ID ` +
       `está como ${FB_PAGE_ID}. O envio funciona mesmo assim, porque usa /me, mas a trava ` +
@@ -2660,15 +2661,14 @@ app.get('/saude', async (req, res) => {
   }
   // Facebook Messenger
   if (FB_TOKEN) {
-    // So o id. Ver "name" depende de pages_read_engagement, que nao afeta o
-    // envio: checar isso aqui transformaria enfeite em alarme de incendio.
-    const r = await chamarFacebook('/me?fields=id');
-    add('Messenger, token da Página', r.ok, r.ok ? `página ${r.data.id}` :
-      ((r.data.error && r.data.error.message) || 'rejeitado').substring(0, 160));
-    if (r.ok && FB_PAGE_ID && String(r.data.id) !== String(FB_PAGE_ID)) {
-      add('Messenger, ID configurado', false,
-        `FACEBOOK_PAGE_ID é ${FB_PAGE_ID} mas o token é da página ${r.data.id}`, false);
-    }
+    // Testa a caixa de conversas, que depende de pages_messaging, a mesma
+    // permissao que o bot usa para responder. Ler o cadastro da Pagina exige
+    // outra permissao, sem relacao com o atendimento, e checar aquilo aqui
+    // transformava enfeite em alarme de incendio.
+    const r = await chamarFacebook('/me/conversations?limit=1');
+    add('Messenger, capacidade de conversar', r.ok,
+      r.ok ? 'pages_messaging respondendo'
+           : ((r.data.error && r.data.error.message) || 'rejeitado').substring(0, 160));
   } else {
     add('Messenger', false, 'não configurado', false);
   }

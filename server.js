@@ -3123,6 +3123,242 @@ app.get('/migrar-qualificacao', async (req, res) => {
   }
 });
 // ══════════════════════════════════════════════════════════════
+// ── ROTA: RECLASSIFICAR OS CONTATOS RECUPERADOS
+// ══════════════════════════════════════════════════════════════
+// A /recuperar-orfaos criou linha para quem conversou e nunca entrou na
+// planilha, mas deixou a qualificacao em branco DE PROPOSITO: o julgamento
+// daquele dia nao era confiavel (um fornecedor de frete saiu como BOM), e
+// preencher com o e-mail antigo seria carimbar o erro.
+// Esta rota grava a releitura dessas conversas feita com a regua atual.
+// A tabela abaixo e resultado de leitura manual, uma conversa por vez, e por
+// isso e fixa: nao ha releitura automatica aqui, so a gravacao do veredito.
+// Regras que ela respeita, iguais as das outras rotas de manutencao:
+//   - prévia por padrao, so grava com &aplicar=1
+//   - nunca sobrescreve celula que ja tem conteudo
+//   - idempotente: rodar de novo nao muda nada
+//   - encontra a linha pelo ID de canal ou pelo telefone, nunca pelo numero
+//     da linha, que muda se alguem inserir uma linha na planilha
+const RECLASSIFICACAO_RECUPERADOS = [
+  { chave: '557791222289', nome: 'Dayane Medrado Faria', empresa: 'DMF Empreendimentos Ltda',
+    cnpj: '57.370.425/0001-00', qualificacao: 'BOM',
+    motivo: 'Releitura 12/08 (4/4): CNPJ 57.370.425/0001-00 no cartao. Quer fechar pedido ' +
+      '("quero fechar um pedido"). Volume 20 kg/mes concentrados em 6 fragrancias, acima do ' +
+      'minimo de 3 kg por fragrancia. Segmento perfumaria e cosmeticos, desenvolve linha propria.' },
+  { chave: '551998444041', nome: 'Paulo Sergio', empresa: 'AcreditasBR',
+    cnpj: '51.774.697/0001-99', qualificacao: 'BOM',
+    motivo: 'Releitura 12/08 (4/4): CNPJ 51.774.697/0001-99 com IE e endereco completos. ' +
+      'Quer desenvolver contratipo de Sauvage. Volume 5 litros/mes, acima do minimo. ' +
+      'Segmento fabricacao de perfumes, ja em producao.' },
+  { chave: '551134006725', nome: 'Bruno Araujo', empresa: 'Orion Ind e Com de Cosmeticos Ltda',
+    cnpj: '41.994.699/0001-30', qualificacao: 'POTENCIAL_FUTURO',
+    motivo: 'Releitura 12/08 (2/4): CNPJ ok e segmento ok. Reprovado em proposito, pediu ' +
+      'catalogo de materias-primas, preco e MOQ, nao abertura de projeto; e em volume, ' +
+      'desviou da pergunta duas vezes. ATENCAO: ouviu que um representante de materia-prima ' +
+      'chamaria no WhatsApp. Promessa em aberto.' },
+  { chave: '556796772209', nome: 'Daniela', empresa: 'Viz',
+    cnpj: '', qualificacao: 'POTENCIAL_FUTURO',
+    motivo: 'Releitura 12/08 (2/4): proposito ok, quer parceiro para linha premium com ativos ' +
+      'amazonicos, e segmento ok. Reprovado em CNPJ, respondeu apenas "sim" sem os digitos, e ' +
+      'em volume, nao informado. ATENCAO: ouviu "vou acionar nossa especialista agora, ela vai ' +
+      'entrar em contato em breve". Promessa em aberto.' },
+  { chave: '553499953654', nome: 'Renata', empresa: '',
+    cnpj: '', qualificacao: 'RUIM',
+    motivo: 'Releitura 12/08 (2/4): quer desenvolver linha de gloss labial, segmento atendido. ' +
+      'Reprovado em CNPJ, nao informou os digitos, e em volume: 50 unidades de 3 mL por ' +
+      'fragrancia, muito abaixo do minimo. Direcionada as revendas pelo agente, corretamente.' },
+  { chave: '553499052571', nome: '', empresa: '',
+    cnpj: '', qualificacao: 'RUIM',
+    motivo: 'Releitura 12/08 (1/4): velas e aromatizadores, segmento atendido. Declarou nao ter ' +
+      'CNPJ ("ainda nao, estou iniciando meu negocio"). Sem volume e sem projeto. ' +
+      'Direcionado as revendas pelo agente, corretamente.' },
+  { chave: '551392114767', nome: 'Maycon', empresa: 'AMS Log',
+    cnpj: '08.757.673/0001-00', qualificacao: 'NAO_LEAD',
+    motivo: 'Releitura 12/08, Regra Zero: nao quer comprar, quer vender. Pediu para falar com ' +
+      '"o Anderson de importacao" porque a recepcao passou o nome dele, e deixou ' +
+      'vendas3@amslog.com.br. Dois sinais de NAO_LEAD ao mesmo tempo: pedir por funcionario ' +
+      'pelo nome e ser encaminhado pela recepcao. Este e o caso que saiu como BOM no e-mail ' +
+      'de 10/08 e motivou a revisao da regua.' },
+  { chave: '551982920025', nome: '', empresa: '',
+    cnpj: '', qualificacao: 'POTENCIAL_FUTURO',
+    motivo: 'Releitura 12/08: so disse "gostaria de saber mais" e parou de responder antes de ' +
+      'qualquer pergunta de qualificacao. Nada informado e nada que desqualifique.' },
+  { chave: '551183419860', nome: '', empresa: '',
+    cnpj: '', qualificacao: 'POTENCIAL_FUTURO',
+    motivo: 'Releitura 12/08: so disse "gostaria de saber mais" e parou de responder antes de ' +
+      'qualquer pergunta de qualificacao. Nada informado e nada que desqualifique.' }
+];
+app.get('/reclassificar-recuperados', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const aplicar = req.query.aplicar === '1';
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A:O`
+    });
+    const rows = r.data.values || [];
+    // Indice das linhas por chave canonica, pelo ID de canal e pelo telefone.
+    const porChave = {};
+    for (let i = 1; i < rows.length; i++) {
+      const kCanal = chaveConversa(rows[i][COL_ID_CANAL] || '');
+      const kTel = chaveNumero(rows[i][3] || '');
+      if (kCanal && !porChave[kCanal]) porChave[kCanal] = i + 1;
+      if (kTel && !porChave[kTel]) porChave[kTel] = i + 1;
+    }
+    const vaiGravar = [], jaClassificadas = [], naoEncontradas = [];
+    for (const item of RECLASSIFICACAO_RECUPERADOS) {
+      const chave = chaveNumero(item.chave) || item.chave;
+      const linha = porChave[chave];
+      if (!linha) { naoEncontradas.push({ chave, nome: item.nome }); continue; }
+      const row = rows[linha - 1] || [];
+      const qualAtual = (row[10] || '').trim();
+      // A K preenchida manda. Se alguem ja classificou, esta rota nao encosta.
+      if (qualAtual) {
+        jaClassificadas.push({ linha, chave, nome: item.nome, jaEsta: qualAtual,
+          seriaGravado: item.qualificacao });
+        continue;
+      }
+      // Nome, empresa e CNPJ so entram se a celula estiver vazia. O que a
+      // pessoa escreveu no formulario vale mais do que o que eu deduzi lendo.
+      const campos = [];
+      if (item.nome && !(row[1] || '').trim()) campos.push({ col: 'B', valor: item.nome });
+      if (item.empresa && !(row[4] || '').trim()) campos.push({ col: 'E', valor: item.empresa });
+      if (item.cnpj && !(row[7] || '').trim()) campos.push({ col: 'H', valor: item.cnpj });
+      vaiGravar.push({ linha, chave, nome: item.nome || '(sem nome)',
+        empresa: item.empresa || '', qualificacao: item.qualificacao,
+        motivo: item.motivo, camposVazios: campos });
+    }
+    if (!aplicar) {
+      return res.json({
+        modo: 'PRÉVIA, nada foi alterado',
+        vaiGravar: vaiGravar.length,
+        linhas: vaiGravar,
+        ignoradasPorJaTerClassificacao: jaClassificadas,
+        naoEncontradasNaPlanilha: naoEncontradas,
+        comoAplicar: 'acrescente &aplicar=1 no endereço',
+        oQueAcontece: 'Grava a classificação na coluna K e o motivo na L. Preenche nome, ' +
+          'empresa e CNPJ apenas onde a célula está vazia. Nenhuma célula com conteúdo é ' +
+          'sobrescrita, e rodar duas vezes não muda nada.'
+      });
+    }
+    const data = [];
+    for (const g of vaiGravar) {
+      data.push({ range: `${SHEET_NAME}!K${g.linha}:L${g.linha}`,
+        values: [[g.qualificacao, g.motivo.substring(0, 500)]] });
+      for (const c of g.camposVazios) {
+        data.push({ range: `${SHEET_NAME}!${c.col}${g.linha}`, values: [[c.valor]] });
+      }
+    }
+    if (data.length) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: SPREADSHEET_ID,
+        requestBody: { valueInputOption: 'RAW', data }
+      });
+    }
+    const bons = vaiGravar.filter(g => g.qualificacao === 'BOM').length;
+    console.log(`Reclassificação dos recuperados: ${vaiGravar.length} linha(s), ${bons} BOM`);
+    res.json({
+      modo: 'APLICADO',
+      gravadas: vaiGravar.length,
+      bons,
+      linhas: vaiGravar,
+      ignoradasPorJaTerClassificacao: jaClassificadas,
+      naoEncontradasNaPlanilha: naoEncontradas,
+      proximoPasso: 'Abra o painel em agosto. Os BOM devem subir e o NAO_LEAD sai da conta.'
+    });
+  } catch(e) {
+    console.error('Erro ao reclassificar recuperados:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+// ══════════════════════════════════════════════════════════════
+// ── ROTA: PROMESSAS DE CONTATO EM ABERTO
+// ══════════════════════════════════════════════════════════════
+// O rebaixamento automatico conserta o numero na planilha DEPOIS que a
+// mensagem ja saiu. Quando isso acontece, o agente ja prometeu ao lead que uma
+// especialista entraria em contato, e a promessa nao da para desfazer: aquela
+// pessoa esta esperando um telefonema que ninguem sabe que precisa dar.
+// A tarja vermelha no e-mail resolve os casos NOVOS. Esta rota varre o
+// historico atras dos casos ANTIGOS, anteriores a tarja.
+// Rota de leitura: nao escreve nada, nao envia nada.
+const PADROES_PROMESSA = [
+  /especialista/i,
+  /vai entrar em contato/i,
+  /entrar[áa]? em contato/i,
+  /entra em contato/i,
+  /vou acionar/i,
+  /vai chamar (voc[êe]|no whats)/i
+];
+app.get('/promessas-pendentes', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
+    const [rl, rc] = await Promise.all([
+      sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A:O` }),
+      sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_CONVERSAS}!A:E` })
+    ]);
+    // Estado de cada contato na planilha de leads.
+    const estado = {};
+    for (const row of (rl.data.values || []).slice(1)) {
+      const info = {
+        nome: row[1] || '', empresa: row[4] || '',
+        qualificacao: (row[10] || '').trim(), telefone: row[3] || ''
+      };
+      const kCanal = chaveConversa(row[COL_ID_CANAL] || '');
+      const kTel = chaveNumero(row[3] || '');
+      if (kCanal) estado[kCanal] = info;
+      if (kTel && !estado[kTel]) estado[kTel] = info;
+    }
+    // Varre o historico atras da promessa, so no que o AGENTE enviou.
+    const porChave = {};
+    for (const l of (rc.data.values || []).slice(1)) {
+      const bruto = l[1] || '';
+      if (!bruto || bruto === 'teste-escrita') continue;
+      if ((l[2] || '').toLowerCase() !== 'enviada') continue;
+      const texto = String(l[3] || '');
+      if (!PADROES_PROMESSA.some(p => p.test(texto))) continue;
+      const chave = chaveConversa(bruto);
+      if (!chave) continue;
+      if (!porChave[chave]) porChave[chave] = { chave, quando: l[0] || '', trecho: '' };
+      const g = porChave[chave];
+      // Guarda a promessa mais RECENTE, que e a que vale.
+      if (!g.quando || parseDataBrasil(l[0]) >= parseDataBrasil(g.quando)) {
+        g.quando = l[0] || '';
+        g.trecho = texto.substring(0, 220);
+      }
+    }
+    const todas = Object.values(porChave).map(p => {
+      const e = estado[p.chave] || {};
+      return {
+        chave: p.chave, canal: canalDaChave(p.chave),
+        nome: e.nome || '', empresa: e.empresa || '',
+        telefone: e.telefone || (p.chave.startsWith('55') ? p.chave : ''),
+        qualificacao: e.qualificacao || '(em branco)',
+        prometidoEm: p.quando, oQueFoiDito: p.trecho,
+        naPlanilha: Object.keys(e).length > 0
+      };
+    }).sort((a, b) => parseDataBrasil(a.prometidoEm) - parseDataBrasil(b.prometidoEm));
+    // Quem ouviu a promessa e NAO e BOM nao gera acionamento do comercial hoje.
+    // Esses sao os que estao esperando sem ninguem saber.
+    const emAberto = todas.filter(t => t.qualificacao !== 'BOM');
+    res.json({
+      modo: 'somente leitura, nada foi alterado',
+      totalComPromessa: todas.length,
+      pendentes: emAberto.length,
+      leiaAssim: 'Cada item de "pendentes" é alguém que ouviu do agente que entrariam em ' +
+        'contato e que HOJE não está como BOM na planilha. Como só o BOM aciona o comercial, ' +
+        'essas pessoas estão esperando um retorno que ninguém sabe que deve. Confira uma a uma ' +
+        'antes de avisar: o padrão de texto pode pegar frase parecida que não é promessa.',
+      pendentesDetalhe: emAberto,
+      todasAsPromessas: todas
+    });
+  } catch(e) {
+    console.error('Erro ao levantar promessas pendentes:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+// ══════════════════════════════════════════════════════════════
 // ── ROTA: SAÚDE DO SISTEMA
 // ══════════════════════════════════════════════════════════════
 // O modo de falha mais perigoso deste bot nao e um erro na tela, e o silencio.

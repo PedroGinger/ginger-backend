@@ -2338,7 +2338,11 @@ app.get('/painel', async (req, res) => {
         nome: row[1] || '', empresa: row[4] || '',
         origem: (row[9] || '').trim() || 'sem origem', qual, motivo: row[11] || '',
         projeto: (row[12] || '').trim(), msgs: c.total, recebidas: c.recebidas,
-        ultima: c.ultima, estado
+        ultima: c.ultima, estado,
+        // Chave para abrir a conversa ao clicar na linha da tabela. Vai so a
+        // chave, nunca o teor: o texto das conversas e buscado na hora do
+        // clique, para nao entrar no arquivo que o Pedro baixa e compartilha.
+        chave: kCanal || kTel || ''
       });
     }
     const orfas = Object.keys(conv).filter(k => !k.startsWith('site-') && !usadas.has(k)).length;
@@ -2452,7 +2456,34 @@ app.get('/painel', async (req, res) => {
   td.obs { color:var(--muted); max-width:230px; }
   .rodape { color:var(--muted); font-size:12px; text-align:center; padding:16px 0 0; }
   .rolar { overflow-x:auto; }
-  @media print { body{background:#fff;} .filtros,.rodape{display:none;} .card,.kpi{border:1px solid #ccc;break-inside:avoid;} }
+  /* ── Leitor de conversa ──────────────────────────────────────────────────
+     A linha da tabela vira um alvo de clique. O cursor e o realce no hover
+     avisam que da para clicar, senao a funcao existe e ninguem descobre. */
+  tr.temConversa { cursor:pointer; }
+  tr.temConversa:hover td { background:var(--trilho); }
+  .fundoModal { position:fixed; inset:0; background:rgba(0,0,0,0.45);
+    display:flex; align-items:center; justify-content:center; padding:20px; z-index:50; }
+  .modal { background:var(--surface); border:1px solid var(--borda); border-radius:12px;
+    width:100%; max-width:680px; max-height:86vh; display:flex; flex-direction:column; }
+  .modalTopo { display:flex; align-items:flex-start; gap:12px;
+    padding:14px 18px; border-bottom:1px solid var(--grid); }
+  .modalTopo h3 { margin:0; font-size:15px; font-weight:600; color:var(--ink); }
+  .modalTopo .sub2 { font-size:12.5px; color:var(--muted); margin-top:2px; }
+  .modalTopo button { margin-left:auto; }
+  .modalCorpo { overflow-y:auto; padding:16px 18px; }
+  /* Balao. O do lead encosta na esquerda, o do agente na direita, como em
+     qualquer aplicativo de conversa: a posicao ja diz quem falou, sem rotulo. */
+  .msg { max-width:78%; margin-bottom:10px; padding:9px 12px; border-radius:12px;
+    font-size:13px; line-height:1.45; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .msg .hora { display:block; font-size:11px; color:var(--muted); margin-bottom:3px;
+    font-variant-numeric:tabular-nums; }
+  .msg.lead { background:var(--trilho); color:var(--ink); border:1px solid var(--borda);
+    margin-right:auto; border-bottom-left-radius:4px; }
+  .msg.agente { background:var(--roxo); color:var(--on-ink); margin-left:auto;
+    border-bottom-right-radius:4px; }
+  .msg.agente .hora { color:var(--on-ink); opacity:0.75; }
+  .vazio { color:var(--muted); font-size:13px; text-align:center; padding:20px 0; }
+  @media print { body{background:#fff;} .filtros,.rodape{display:none;} .fundoModal{display:none;} .card,.kpi{border:1px solid #ccc;break-inside:avoid;} }
 </style>
 </head><body class="viz-root" data-palette="#B98FD1,#9C6BBB,#7E48A2,#632C87,#47166B" data-mode="light">
 <div class="wrap">
@@ -2580,7 +2611,8 @@ function render(){
  const avisoProj = D.projetosNoArquivoTodo===0
   ? '<div class="alerta"><b>A etapa "Projeto aberto" ainda não tem dado.</b> Esse número não vem do Otimizah, vem da coluna PROJETO da planilha, preenchida à mão por quem abre o projeto. Nenhuma linha do arquivo inteiro está preenchida, então este zero significa "ninguém anotou ainda", e não "nenhum projeto foi aberto". Enquanto for assim, não leve essa linha para apresentação.</div>'
   : (C.projetos===0&&C.bom>0?'<div class="alerta"><b>Nenhum projeto anotado neste recorte</b>, embora existam leads BOM. Como o campo é preenchido à mão, pode ser ausência de projeto ou ausência de anotação. Confirme com o comercial antes de apresentar.</div>':'');
- const tab=L.slice().sort((a,b)=>(b.ultima||0)-(a.ultima||0)).map(l=>'<tr>'+
+ const tab=L.slice().sort((a,b)=>(b.ultima||0)-(a.ultima||0)).map(l=>
+  '<tr'+(l.chave&&l.msgs>0?' class="temConversa" data-conversa="'+esc(l.chave)+'" data-quem="'+esc((l.nome||'Contato')+(l.empresa?' · '+l.empresa:''))+'" title="Clique para ler a conversa"':'')+'>'+
   '<td class="num">'+esc(l.data)+'</td><td>'+esc(l.nome)+'</td><td>'+esc(l.empresa)+'</td>'+
   '<td>'+esc(rotOrigem(l.origem))+'</td><td>'+esc(ROT_EST[l.estado]||l.estado)+'</td>'+
   '<td>'+(l.qual?'<span class="sw" style="background:var(--st-'+(TOK[l.qual]||'nao')+')"></span>'+esc(l.qual):'—')+'</td>'+
@@ -2652,6 +2684,7 @@ document.addEventListener('click',ev=>{
  else if(id==='btHtml'){
   const copia=document.documentElement.cloneNode(true);
   const bt=copia.querySelector('#btHtml'); if(bt) bt.remove();
+  const lr=copia.querySelector('#leitor'); if(lr) lr.remove();
   const doc='<!DOCTYPE html>'+copia.outerHTML;
   const b=new Blob([doc],{type:'text/html;charset=utf-8;'});
   const a=document.createElement('a');
@@ -2659,6 +2692,65 @@ document.addEventListener('click',ev=>{
   a.download='painel-ginger-'+(TODOS?'historico':ANO+'-'+String(MES).padStart(2,'0'))+'.html';
   a.click(); URL.revokeObjectURL(a.href);
  }
+});
+// ── Leitor de conversa ─────────────────────────────────────────────────────
+// A chave de acesso e lida da barra de enderecos NA HORA do clique, nunca
+// gravada no HTML. Assim o arquivo que o Pedro baixa e compartilha nao carrega
+// a chave junto: quem receber ve as metricas e nao consegue abrir conversa.
+function chaveDaUrl(){
+  try { return new URLSearchParams(location.search).get('chave')||''; } catch(e){ return ''; }
+}
+function fechaConversa(){
+  const f=document.getElementById('leitor'); if(f) f.remove();
+  document.removeEventListener('keydown',escFecha);
+  // Solta a pagina de tras. Sem isso, quem rola a conversa longa acaba
+  // rolando o painel por baixo e se perde ao fechar.
+  document.body.style.overflow='';
+}
+function escFecha(e){ if(e.key==='Escape') fechaConversa(); }
+function abreConversa(contato,quem){
+  fechaConversa();
+  const f=document.createElement('div');
+  f.className='fundoModal'; f.id='leitor';
+  f.innerHTML='<div class="modal" role="dialog" aria-modal="true" aria-label="Conversa">'+
+    '<div class="modalTopo"><div><h3>'+esc(quem)+'</h3>'+
+    '<div class="sub2" id="lrSub">carregando…</div></div>'+
+    '<button class="chip" id="lrFechar">Fechar</button></div>'+
+    '<div class="modalCorpo" id="lrCorpo"><div class="vazio">Buscando a conversa…</div></div></div>';
+  document.body.appendChild(f);
+  document.body.style.overflow='hidden';
+  // Clique no fundo escuro fecha. Clique dentro do painel branco, nao.
+  f.addEventListener('click',ev=>{ if(ev.target===f) fechaConversa(); });
+  document.getElementById('lrFechar').addEventListener('click',fechaConversa);
+  document.addEventListener('keydown',escFecha);
+  const ch=chaveDaUrl();
+  if(!ch){
+    document.getElementById('lrSub').textContent='indisponível neste arquivo';
+    document.getElementById('lrCorpo').innerHTML='<div class="vazio">Este é um arquivo baixado do painel. '+
+      'Ele guarda os números, mas não o texto das conversas, de propósito. '+
+      'Para ler a conversa, abra o painel no endereço original.</div>';
+    return;
+  }
+  fetch('/conversa?chave='+encodeURIComponent(ch)+'&contato='+encodeURIComponent(contato))
+   .then(r=>r.ok?r.json():Promise.reject(new Error('resposta '+r.status)))
+   .then(d=>{
+     const sub=document.getElementById('lrSub'), corpo=document.getElementById('lrCorpo');
+     if(!sub||!corpo) return;
+     sub.textContent=d.canal+' · '+d.total+' mensagens, '+d.recebidas+' do lead';
+     corpo.innerHTML=d.mensagens.length
+      ? d.mensagens.map(m=>'<div class="msg '+(m.quem==='lead'?'lead':'agente')+'">'+
+          '<span class="hora">'+esc(m.data)+'</span>'+esc(m.texto)+'</div>').join('')
+      : '<div class="vazio">Nenhuma mensagem registrada para este contato.</div>';
+   })
+   .catch(e=>{
+     const sub=document.getElementById('lrSub'), corpo=document.getElementById('lrCorpo');
+     if(sub) sub.textContent='falhou';
+     if(corpo) corpo.innerHTML='<div class="vazio">Não consegui carregar a conversa. '+esc(e.message)+'</div>';
+   });
+}
+document.addEventListener('click',e=>{
+  const tr=e.target.closest&&e.target.closest('tr.temConversa');
+  if(tr) abreConversa(tr.dataset.conversa,tr.dataset.quem||'Contato');
 });
 // Se o usuario nunca escolheu, segue o sistema. Se escolheu, a escolha manda.
 aplicaTema(temaSalvo());
@@ -2689,6 +2781,47 @@ render();
 // Esta rota e de mao unica e roda uma vez. Por padrao ela apenas MOSTRA o que
 // faria. Só muda a planilha com &aplicar=1.
 const CLASSIFICACOES_VALIDAS = ['BOM', 'POTENCIAL_FUTURO', 'RUIM', 'NAO_LEAD'];
+// ══════════════════════════════════════════════════════════════
+// ── ROTA: CONVERSA DE UM CONTATO (JSON, para o painel)
+// ══════════════════════════════════════════════════════════════
+// Serve o historico de UM contato, para o painel abrir ao clicar na linha da
+// tabela. Deliberadamente separada do painel: se o teor das conversas fosse
+// junto com os dados do painel, ele entraria no arquivo HTML que o Pedro baixa
+// para compartilhar, e ai um arquivo de metricas passaria a carregar a conversa
+// inteira de 65 pessoas. Aqui o texto so sai quando alguem pede, uma pessoa
+// por vez, com a chave na mao.
+app.get('/conversa', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const pedido = (req.query.contato || '').trim();
+  if (!pedido) return res.status(400).json({ erro: 'informe contato' });
+  const alvo = chaveConversa(pedido);
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_CONVERSAS}!A:E`
+    });
+    const mensagens = [];
+    for (const l of (r.data.values || []).slice(1)) {
+      if (chaveConversa(l[1] || '') !== alvo) continue;
+      mensagens.push({
+        data: l[0] || '',
+        quem: (l[2] || '').toLowerCase() === 'recebida' ? 'lead' : 'agente',
+        texto: l[3] || ''
+      });
+    }
+    mensagens.sort((a, b) => parseDataBrasil(a.data) - parseDataBrasil(b.data));
+    res.json({
+      contato: alvo, canal: canalDaChave(alvo),
+      total: mensagens.length,
+      recebidas: mensagens.filter(m => m.quem === 'lead').length,
+      mensagens
+    });
+  } catch(e) {
+    console.error('Erro ao buscar conversa:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
 // ══════════════════════════════════════════════════════════════
 // ── ROTA: DIAGNÓSTICO DAS LINHAS
 // ══════════════════════════════════════════════════════════════

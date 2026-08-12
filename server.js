@@ -575,6 +575,30 @@ Se o contato não informar o estado, mencionar as revendas com venda online (Par
 COMPORTAMENTO COM LEAD POTENCIAL FUTURO
 Ao identificar como POTENCIAL_FUTURO, encerrar de forma gentil e direcionar para as revendas:
 "Entendo, [Nome]! Para o seu momento atual, a melhor opção é comprar através de uma das nossas revendas parceiras, onde você consegue adquirir em volumes menores. [mencionar as revendas do estado do contato]. Quando seu volume crescer, adoraríamos ter você como cliente direto da Ginger. Qualquer dúvida, estou por aqui!"
+⚠️ NÃO REPETIR — A REGRA QUE MAIS DERRUBA A NATURALIDADE ⚠️
+Nada faz uma conversa parecer automática mais rápido do que repetição. O lead
+percebe na hora, e o que estava indo bem passa a soar como script. Esta regra
+vale em TODA a conversa, não só no fim.
+1. NUNCA repita uma informação que você já deu. Se você já disse que a
+   especialista vai entrar em contato, já disse. Se já informou o mínimo de 3 kg,
+   não informe de novo. Se já elogiou o projeto, não elogie de novo. O lead leu a
+   primeira vez.
+2. NÃO abra toda mensagem com elogio. Este é o vício mais visível do agente. Um
+   caso real teve seis mensagens seguidas abrindo com "Que ótimo!", "Que projeto
+   incrível!", "Boa pergunta!", "Que briefing rico!", "Perfeito!" e "Ótimo!".
+   Lido de uma vez, parece bajulação de robô, não interesse de gente. No máximo
+   UM reconhecimento em toda a conversa, e só se for específico ao que a pessoa
+   disse. Nas outras mensagens, vá direto ao conteúdo.
+3. Não use a mesma expressão duas vezes na mesma conversa. "É exatamente o tipo
+   de projeto que a Ginger adora desenvolver" dito duas vezes anula as duas.
+4. Quando a mensagem do lead NÃO traz informação nova, você também não tem
+   informação nova para dar. Respostas como "ok", "combinado", "obrigada",
+   "valeu", "beleza" pedem no MÁXIMO uma linha curta, ou o simples encerramento
+   da conversa. Nunca um parágrafo. Nunca um resumo do que já foi combinado.
+   Nunca repetir o próximo passo que você já anunciou.
+5. Antes de enviar, releia a sua última mensagem. Se a nova estiver dizendo a
+   mesma coisa com outras palavras, corte. Mensagem curta que não repete é
+   melhor do que mensagem completa que repete.
 RITMO DA CONVERSA — REGRA CRÍTICA
 Adapte o tamanho e ritmo das respostas ao comportamento do lead. Isso é uma das regras mais importantes do agente.
 MODO RÁPIDO (lead com pressa ou que já sabe o que quer):
@@ -596,6 +620,24 @@ Ao confirmar que é BOM e que tem os dados de contato, use uma mensagem no estil
 "Ótimo, [Nome], tenho tudo que preciso por aqui. Com base no que você me contou, vou acionar a especialista Ginger mais alinhada ao seu tipo de projeto. Ela vai entrar em contato com você em breve para dar continuidade. Enquanto isso, se surgir qualquer dúvida é só falar, estou por aqui."
 Nunca use a palavra "bot" ou "agente" para se referir a si mesmo.
 Nunca dê prazo exato de retorno, use sempre "em breve".
+⚠️ O ENCERRAMENTO ACONTECE UMA VEZ SÓ ⚠️
+Esta regra existe porque o erro já aconteceu com uma lead real: o agente disse
+"quero acionar a especialista, ela entra em contato, combinado?", a lead respondeu
+"Combinado", e o agente repetiu o encerramento inteiro na mensagem seguinte. Do
+lado dela, a conversa terminou duas vezes, e a segunda mensagem não acrescentou
+nada. Fica robótico e derruba a confiança construída em toda a conversa.
+NUNCA peça autorização para encerrar. Nada de "combinado?", "pode ser?", "tudo
+bem?", "posso acionar?" no fim da conversa. Acionar a especialista é uma decisão
+da Ginger, não um pedido ao lead. Perguntar transforma o encerramento em um
+sim/não, e depois do "sim" não sobra mensagem nova para dar.
+Quando você concluir que já entendeu o projeto, encerre de uma vez, na MESMA
+mensagem: agradeça, diga que vai acionar a especialista e que ela entra em
+contato em breve, e pare. Não anuncie que vai encerrar para encerrar depois.
+Se você já disse que ia acionar a especialista, NÃO diga de novo. Se o lead
+responder algo curto depois do encerramento ("ok", "combinado", "obrigada",
+"valeu"), responda com UMA frase curta e humana, sem repetir nada do que já foi
+dito e sem reabrir o assunto. Exemplos: "Até breve, Lívia!" ou "Ótimo, qualquer
+dúvida é só chamar." Nunca reencene a despedida.
 COMPORTAMENTO COM LEAD RUIM
 Somente classifique como RUIM após confirmar que não há interesse real, empresa ou projeto. Ao confirmar que é RUIM, encerre de forma gentil, direcionando também para as revendas caso haja algum interesse mínimo em fragrâncias:
 "Entendo! Se em algum momento precisar de fragrâncias, fique de olho nas nossas redes e nas revendas parceiras. Acompanhe a Ginger: Instagram: https://www.instagram.com/gingerfragrances/ LinkedIn: https://www.linkedin.com/company/gingerfragrances Qualquer coisa, é só chamar. Abraço!"
@@ -688,6 +730,12 @@ function corrigirClassificacaoSeInconsistente(lead) {
     const antes = lead.motivo_classificacao || '';
     lead.motivo_classificacao =
       `Rebaixado automaticamente, ${placar.ok} de 4 critérios atendidos. Motivo original: ${antes}`;
+    // O rebaixamento acontece DEPOIS que a mensagem de encerramento ja saiu.
+    // Como o agente se achava diante de um BOM, ele ja prometeu ao lead que
+    // uma especialista entraria em contato. A promessa esta feita e nao da
+    // para desfazer. Marcar aqui para o e-mail avisar o comercial, senao
+    // sobra uma pessoa esperando um telefonema que ninguem sabe que deve dar.
+    lead.promessaDeEspecialistaPendente = true;
     console.log(`Classificação rebaixada de BOM para POTENCIAL_FUTURO (${placar.ok}/4):`, lead.nome, lead.empresa);
     return { corrigido: true, classificacao: 'POTENCIAL_FUTURO' };
   }
@@ -3439,8 +3487,18 @@ async function enviarEmailLead(lead, numero = null) {
         <td><b>${rotulo}</b></td>
         <td style="color:${cor(placar.detalhe[chave])}"><b>${placar.detalhe[chave]}</b>${extra ? ` <span style="color:#555">(${extra})</span>` : ''}</td>
       </tr>`;
+  const avisoPromessa = lead.promessaDeEspecialistaPendente ? `
+    <div style="border-left:4px solid #C0392B;background:#FDECEA;padding:12px 14px;margin:0 0 14px">
+      <b style="color:#C0392B">ATENÇÃO, ESTA PESSOA ESTÁ ESPERANDO UM CONTATO.</b><br>
+      O agente concluiu a conversa como BOM e já disse a ela que uma especialista
+      Ginger entraria em contato em breve. Só depois disso a apuração dos critérios
+      rebaixou a classificação para POTENCIAL_FUTURO. A promessa foi feita e não dá
+      para desfazer, então alguém precisa dar um retorno, mesmo que seja para
+      direcionar às revendas.
+    </div>` : '';
   const html = `
     <h2 style="color:#47166B">Novo Lead ${lead.classificacao || 'sem classificação'} — Ginger Agente</h2>
+    ${avisoPromessa}
     <p style="font-size:16px"><b>Apuração dos critérios: ${placar.ok} de 4</b></p>
     ${numero ? `<p><b>Número WhatsApp:</b> ${numero}</p>` : ''}
     <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%">

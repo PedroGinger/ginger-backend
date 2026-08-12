@@ -2468,6 +2468,7 @@ app.get('/painel', async (req, res) => {
       <span class="dir">
         <button class="chip" id="btTema" title="Alternar entre fundo claro e escuro"></button>
         <button class="chip" id="btCsv">Baixar CSV</button>
+        <button class="chip" id="btHtml">Baixar painel</button>
         <button class="chip" id="limpar" hidden>Limpar filtros</button>
       </span>
     </div>
@@ -2641,6 +2642,21 @@ document.addEventListener('click',ev=>{
   const a=document.createElement('a');
   a.href=URL.createObjectURL(b);
   a.download='leads-ginger-'+(TODOS?'historico':ANO+'-'+String(MES).padStart(2,'0'))+'.csv';
+  a.click(); URL.revokeObjectURL(a.href);
+ }
+ // Baixa o painel inteiro como um arquivo unico, para o Pedro compartilhar sem
+ // dar a chave de acesso a ninguem. A pagina ja e autossuficiente: CSS, script
+ // e dados vao todos dentro do HTML, entao o arquivo salvo continua com filtros
+ // e troca de mes funcionando, mesmo sem internet. O botao sai da copia para
+ // quem receber nao clicar em "baixar" dentro de um arquivo baixado.
+ else if(id==='btHtml'){
+  const copia=document.documentElement.cloneNode(true);
+  const bt=copia.querySelector('#btHtml'); if(bt) bt.remove();
+  const doc='<!DOCTYPE html>'+copia.outerHTML;
+  const b=new Blob([doc],{type:'text/html;charset=utf-8;'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(b);
+  a.download='painel-ginger-'+(TODOS?'historico':ANO+'-'+String(MES).padStart(2,'0'))+'.html';
   a.click(); URL.revokeObjectURL(a.href);
  }
 });

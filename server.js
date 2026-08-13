@@ -462,7 +462,8 @@ Sinais de NAO_LEAD, qualquer um basta:
 - É candidato a vaga de emprego
 - É cliente ativo com problema de pedido, prazo, amostra, transporte ou pós-venda
 - É imprensa, estudante, pesquisa acadêmica ou concorrente
-COMO AGIR COM NAO_LEAD: seja cordial e breve. Não faça perguntas de briefing, não pergunte se tem CNPJ, não pergunte volume, não colete a ficha, não ofereça as revendas. Diga que vai direcionar internamente e oriente a escrever para contato@ginger.ind.br. Gere o bloco de dados com classificacao "NAO_LEAD" e o motivo em uma linha, mesmo que não tenha e-mail nem telefone.
+COMO AGIR COM NAO_LEAD: seja cordial e breve. Não faça perguntas de briefing, não pergunte se tem CNPJ, não pergunte volume, não colete a ficha, não ofereça as revendas. Oriente a escrever para contato@ginger.ind.br e encerre.
+⚠️ NUNCA PROMETA RETORNO A UM NAO_LEAD. Proibido dizer "nossa equipe entra em contato", "vou encaminhar e alguém te retorna", "em breve alguém fala com você", "vou acionar o setor responsável" ou qualquer variação. A Ginger não se compromete a ligar de volta para quem não quer comprar, e a promessa deixa a pessoa esperando um retorno que ninguém vai dar. O único encaminhamento é o e-mail: quem quiser resposta escreve para contato@ginger.ind.br. Isso vale inclusive para fornecedor educado, empresa conhecida e para quem diz que a recepção mandou falar com você. Gere o bloco de dados com classificacao "NAO_LEAD" e o motivo em uma linha, mesmo que não tenha e-mail nem telefone.
 Modelo: "Entendi! Esse assunto não é comigo, mas escrevendo para contato@ginger.ind.br a área responsável te retorna. Obrigado pelo contato!"
 ATENÇÃO: um fornecedor querendo vender para a Ginger NÃO é lead, mesmo que tenha CNPJ, mesmo que seja empresa grande, mesmo que o assunto envolva fragrância. A pergunta é sempre: essa pessoa quer COMPRAR da Ginger? Se a resposta for não, é NAO_LEAD.
 ⚠️ REGRA DE ENTRADA — CNPJ É PRÉ-REQUISITO ⚠️
@@ -3704,6 +3705,34 @@ app.get('/webhook-subscribe', async (req, res) => {
     res.status(500).json({ erro: e.message });
   }
 });
+// ── PARA QUEM VAI O E-MAIL DE CADA LEAD
+// Ate 12/08 saia o mesmo e-mail para todo mundo em qualquer classificacao que
+// nao fosse NAO_LEAD. Juliana e Jennifer recebiam POTENCIAL_FUTURO e RUIM junto
+// com BOM, o que gasta a atencao delas no que nao vira projeto e, do lado do
+// Pedro, dava a impressao de que o mes tinha mais BOM do que tinha.
+// Agora BOM aciona o comercial e o resto vai para triagem, so para o Pedro.
+// EXCECAO QUE NAO PODE SER PERDIDA: quando o rebaixamento automatico pega um
+// lead que JA ouviu do agente que uma especialista ligaria, o e-mail volta a ir
+// para todos, porque e justamente o caso em que alguem precisa dar retorno.
+// Sem esta excecao, a separacao esconderia exatamente quem esta esperando.
+const EMAIL_TRIAGEM = process.env.EMAIL_TRIAGEM || 'pedro.bolanho@ginger.ind.br';
+function destinoDoEmail(lead, placar) {
+  const comercial = (process.env.EMAIL_COMERCIAL || '').split(',').map(e => e.trim()).filter(Boolean);
+  const triagem = EMAIL_TRIAGEM.split(',').map(e => e.trim()).filter(Boolean);
+  const classe = classificacaoNormalizada(lead) || 'BOM';
+  const empresa = lead.empresa || 'Sem empresa';
+  const corpo = `${classe} (${placar.ok}/4): ${empresa} — Agente Ginger`;
+  if (lead.promessaDeEspecialistaPendente) {
+    return { para: comercial.length ? comercial : triagem, rotulo: 'comercial (promessa em aberto)',
+      assunto: `[ESPERANDO CONTATO] Lead ${corpo}` };
+  }
+  if (classe === 'BOM') {
+    return { para: comercial.length ? comercial : triagem, rotulo: 'comercial',
+      assunto: `Lead ${corpo}` };
+  }
+  const prefixo = classe === 'POTENCIAL_FUTURO' ? '[POTENCIAL]' : '[RUIM]';
+  return { para: triagem, rotulo: 'triagem', assunto: `${prefixo} Lead ${corpo}` };
+}
 // ── FUNÇÃO: ENVIAR EMAIL DE LEAD via Resend
 async function enviarEmailLead(lead, numero = null) {
   // Segunda trava para NAO_LEAD. A primeira esta no webhook, esta aqui garante
@@ -3761,6 +3790,8 @@ async function enviarEmailLead(lead, numero = null) {
     <p style="color:#47166B;font-size:13px"><b>Ao abrir o projeto no Otimizah, anote o número do projeto na coluna PROJETO da planilha LEADS GINGER.</b> É o que permite medir o retorno dos leads da internet.</p>
     <p style="color:#888;font-size:12px">Gerado automaticamente pelo Agente Ginger</p>
   `;
+  const destino = destinoDoEmail(lead, placar);
+  console.log(`E-mail de lead: ${lead.classificacao} → ${destino.rotulo} (${destino.para.join(', ')})`);
   try {
     const response = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -3770,8 +3801,8 @@ async function enviarEmailLead(lead, numero = null) {
       },
       body: JSON.stringify({
         from: 'Ginger Agente <lead@ginger.ind.br>',
-        to: process.env.EMAIL_COMERCIAL.split(','),
-        subject: `Lead ${lead.classificacao || 'BOM'} (${placar.ok}/4): ${lead.empresa || 'Sem empresa'} — Agente Ginger`,
+        to: destino.para,
+        subject: destino.assunto,
         html
       })
     });

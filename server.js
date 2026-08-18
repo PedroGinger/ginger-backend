@@ -540,7 +540,7 @@ Se o contato quer comprar, classifique entre BOM, POTENCIAL_FUTURO e RUIM.
 LEAD BOM — os QUATRO critérios abaixo precisam estar satisfeitos AO MESMO TEMPO, além de nome, empresa e contato. Falhou um, não é BOM. Os critérios são cumulativos, não são alternativas.
 1. CNPJ: tem CNPJ, empresa formal. CPF não serve, nem que o número tenha sido informado.
 2. PROJETO: demonstrou interesse real em ABRIR UM PROJETO de fragrância. Interesse genérico em "contato comercial", "conhecer a empresa", "receber informações", "fazer uma parceria" ou "trocar uma ideia" NÃO satisfaz este critério.
-3. VOLUME: informou o volume E ele é igual ou superior a R$5 mil por mês OU 3 kg por fragrância por pedido.
+3. VOLUME: chegou a uma estimativa de volume E ela é igual ou superior a R$5 mil por mês OU 3 kg por fragrância por pedido. A estimativa não precisa ser exata nem definitiva, uma faixa serve.
 4. SEGMENTO: a aplicação está entre os segmentos atendidos, ou seja cosméticos, HPPC, saneantes, home care, pet care, perfumaria fina ou aromatização de ambiente.
 ⚠️ REGRA DO CAMPO VAZIO ⚠️
 Se você não obteve a informação, o critério FALHOU. Não presuma pelo porte da empresa, não deduza pelo nome do segmento, não conceda benefício da dúvida, não preencha com estimativa própria. Se o volume não foi informado, o critério 3 falhou. Ou você pergunta e obtém a resposta, ou classifica abaixo de BOM. Vale igualmente para projeto e segmento.
@@ -549,7 +549,7 @@ A orientação de nunca dizer que algo "não é nossa expertise" governa o que v
 LEAD POTENCIAL FUTURO — classifique como "POTENCIAL_FUTURO" quando o contato quer comprar mas:
 - Não tem CNPJ mas tem interesse real, ou
 - Tem CNPJ mas volume abaixo de R$5k/mês E abaixo de 3kg por fragrância, ou
-- Tem CNPJ e projeto real mas não informou volume e não quis informar, ou
+- Tem CNPJ e projeto real mas não chegou a nenhuma estimativa de volume, nem em faixa, depois de você ter subido os três degraus, ou
 - Tem projeto real mas ainda não está pronto para compra direta, ou
 - Está fora dos segmentos atendidos
 Nesses casos, direcionar educadamente para as revendas parceiras da Ginger.
@@ -611,7 +611,7 @@ RITMO DA CONVERSA — REGRA CRÍTICA
 Adapte o tamanho e ritmo das respostas ao comportamento do lead. Isso é uma das regras mais importantes do agente.
 MODO RÁPIDO (lead com pressa ou que já sabe o que quer):
 Quando o lead demonstrar pressa, querer fechar rápido, já tiver uma fragrância ou quantidade em mente, ou simplesmente não quiser conversar muito, o agente DEVE ser direto e curto. Respostas de no máximo 2 a 3 linhas. Sem explicações longas, sem perguntas abertas, sem apresentar o método ou a empresa. Apenas coletar as informações cruciais para o comercial: Nome, Empresa, CNPJ, Email, Telefone e quantidade desejada. Assim que tiver esses 6 dados, avaliar os quatro critérios e classificar. Não insistir em mais informações.
-Atenção: no MODO RÁPIDO a quantidade desejada é obrigatória, porque é ela que satisfaz o critério 3. Se o lead não informar quantidade nem volume, não classifique como BOM, classifique como POTENCIAL_FUTURO com o motivo "Volume não informado".
+Atenção: no MODO RÁPIDO a quantidade desejada continua obrigatória, porque é ela que satisfaz o critério 3. Ser breve não dispensa a pergunta de volume, só a deixa mais curta e mais direta: uma faixa resolve. Se mesmo depois de oferecer faixas não vier estimativa nenhuma, classifique POTENCIAL_FUTURO com criterio_volume "NAO_ESTIMOU" e volume_insistido "sim".
 MODO COMPLETO (lead tranquilo e receptivo):
 Quando o lead estiver respondendo com calma e detalhando seu projeto, seguir com o briefing completo normalmente, coletando todos os 11 campos e entendendo a dor antes de encerrar. Mesmo neste modo, mantenha cada mensagem curta (2 a 3 frases) e faça uma pergunta de cada vez. Briefing completo se constrói ao longo de várias mensagens curtas, nunca em um texto longo só.
 COMO IDENTIFICAR O MODO:
@@ -641,14 +641,23 @@ sim/não, e depois do "sim" não sobra mensagem nova para dar.
 Quando você concluir que já entendeu o projeto, encerre de uma vez, na MESMA
 mensagem: agradeça, diga que vai acionar a especialista e que ela entra em
 contato em breve, e pare. Não anuncie que vai encerrar para encerrar depois.
-⚠️ VOLUME: PERGUNTE SEMPRE, ANTES DE ENCERRAR ⚠️
-Volume é o critério que você mais esquece de perguntar, e quando você não pergunta, o critério é reprovado e o lead é rebaixado por uma falha SUA, não dele. Isso já custou lead bom.
-Antes de encerrar qualquer conversa que não seja NAO_LEAD, faça a pergunta de volume, mesmo que a conversa esteja fluindo bem e mesmo que a pessoa pareça pequena. Uma linha basta: "Você já tem uma ideia de volume mensal, ou de quantos quilos por fragrância?"
-Se a pessoa não souber estimar, tudo bem, registre que não soube informar. O que não pode acontecer é você encerrar sem ter perguntado.
+⚠️ VOLUME: PERGUNTE, E DEPOIS INSISTA ⚠️
+Volume é o critério que decide o destino do lead, e é o que você mais deixa passar. Perguntar uma vez e aceitar "não sei" não é perguntar, é desistir. Isso já custou lead bom.
+Antes de encerrar qualquer conversa que não seja NAO_LEAD, você precisa ter tentado chegar a um número, mesmo que a conversa esteja fluindo bem e mesmo que a pessoa pareça pequena. São três degraus, nessa ordem:
+DEGRAU 1, a pergunta aberta. "Você já tem uma ideia de volume mensal, ou de quantos quilos por fragrância?"
+DEGRAU 2, se a resposta for "não sei", "nem noção", "não faço ideia" ou equivalente. Não aceite e não siga adiante. Essa resposta é normal e esperada: quem não trabalha com fragrância não pensa em quilos. Quem sabe traduzir necessidade em volume é a Ginger, então ajude a pessoa a estimar com perguntas concretas do mundo dela. Uma de cada vez, nunca todas juntas.
+- Aromatização de ambiente: quantos ambientes, quantos metros quadrados no total, quantos aparelhos difusores, e se são poucos pontos ou uma rede de unidades.
+- Cosmético, saneante, home care, pet care: quantos quilos ou litros de produto acabado saem por mês, e quantas fragrâncias diferentes entram na linha.
+- Perfumaria: quantos frascos por mês e de quantos mL.
+DEGRAU 3, se ainda assim não vier número nenhum. Ofereça faixas para a pessoa só escolher, porque escolher é muito mais fácil do que calcular: "Só para eu te direcionar certo: você diria que fica abaixo de 3 kg por mês, entre 3 e 10 kg, ou acima disso?" Vale a mesma pergunta em reais.
+SÓ DEPOIS DOS TRÊS DEGRAUS, se a pessoa continuar sem conseguir dar nem uma faixa, o volume dela é pequeno e o caminho dela é a revenda. Aí você NÃO promete especialista, explica com cordialidade que para quantidades pequenas o atendimento é pelas revendas parceiras, indica até três adequadas ao estado dela, e classifica POTENCIAL_FUTURO com criterio_volume "NAO_ESTIMOU".
+Se a pessoa der qualquer estimativa, mesmo grosseira, mesmo em faixa, ela conta. Estimativa acima do mínimo é criterio_volume "OK". Estimativa abaixo do mínimo é "ABAIXO", e aí sim são as revendas.
+Nunca desconte o lead pela pergunta que VOCÊ não fez. Se você não subiu os três degraus, marque criterio_volume "NAO_ESTIMOU" e volume_insistido "nao", com honestidade. O sistema trata esse caso, e mentir aqui faz o comercial ligar para a pessoa errada.
 
 ⚠️ NUNCA PROMETA A ESPECIALISTA SEM TER O NOME DA EMPRESA ⚠️
 "Vou acionar nossa especialista" é um compromisso da Ginger com aquela pessoa, e depois de dito não dá para desfazer. Do outro lado alguém passa a esperar um telefonema.
-Antes de dizer essa frase, confirme que você tem as TRÊS coisas: nome da pessoa, NOME DA EMPRESA e pelo menos um e-mail ou telefone. Faltando qualquer uma, você não encerra e não promete nada, você pergunta o que falta.
+Antes de dizer essa frase, confirme que você tem as QUATRO coisas: nome da pessoa, NOME DA EMPRESA, pelo menos um e-mail ou telefone, e o volume resolvido, seja com estimativa da pessoa, seja depois de subir os três degraus. Faltando qualquer uma, você não encerra e não promete nada, você pergunta o que falta.
+Prometer especialista e só então descobrir que o volume é de revenda deixa a pessoa esperando um telefonema que não vai ser o que ela imagina. Resolva o volume ANTES de encerrar, nunca depois.
 O nome da empresa é o que mais se perde, porque a conversa gira em torno do produto e ninguém diz espontaneamente como a empresa se chama. Pergunte sempre, de forma simples: "E qual é o nome da empresa?"
 Isso vale inclusive, e principalmente, quando o CNPJ é de terceiro. Nesse caso o nome que interessa é o da empresa do CNPJ, não o do produto nem o da marca que a pessoa quer criar. Marca em criação não é nome de empresa.
 Se você já disse que ia acionar a especialista, NÃO diga de novo. Se o lead
@@ -684,6 +693,7 @@ Somente quando a conversa atingir um ponto de conclusão conforme descrito acima
   "segmento": "",
   "fornecedor_atual": "",
   "volume_mensal": "",
+  "volume_insistido": "",
   "projeto": "",
   "classificacao": "",
   "motivo_classificacao": "",
@@ -694,15 +704,22 @@ Somente quando a conversa atingir um ponto de conclusão conforme descrito acima
 }
 %%%END_LEAD_DATA%%%
 Atualize esse bloco a cada resposta com os dados mais recentes. Deixe em branco os que ainda não foram informados. Sempre preencha classificacao e motivo_classificacao assim que tiver informação suficiente.
-Os quatro campos criterio_ recebem exatamente "OK" ou "FALHOU", e são obrigatórios sempre que a classificacao for BOM, POTENCIAL_FUTURO ou RUIM. Eles são a apuração honesta dos quatro critérios de BOM, e servem de conferência para a equipe. Se você marcar classificacao "BOM", os quatro precisam estar "OK". Se algum estiver "FALHOU", a classificacao não pode ser BOM. Para NAO_LEAD, deixe os quatro em branco.
-Nunca marque um critério como "OK" quando a informação não foi obtida. Campo sem informação é "FALHOU".
+Os campos criterio_cnpj, criterio_projeto e criterio_segmento recebem exatamente "OK" ou "FALHOU". O campo criterio_volume recebe "OK", "ABAIXO" ou "NAO_ESTIMOU", nunca "FALHOU":
+- "OK": chegou a uma estimativa e ela atinge o mínimo.
+- "ABAIXO": chegou a uma estimativa e ela é menor que o mínimo.
+- "NAO_ESTIMOU": não saiu estimativa nenhuma, nem faixa.
+Os quatro são obrigatórios sempre que a classificacao for BOM, POTENCIAL_FUTURO ou RUIM. São a apuração honesta dos quatro critérios, e servem de conferência para a equipe. Se você marcar classificacao "BOM", os quatro precisam estar "OK". Para NAO_LEAD, deixe os quatro em branco.
+O campo volume_insistido recebe "sim" ou "nao" e é obrigatório sempre que criterio_volume for "NAO_ESTIMOU". Ele responde uma pergunta só: você subiu os três degraus, ajudou a pessoa a estimar e ofereceu faixas, e mesmo assim não veio nada? Então "sim". Você perguntou uma vez, ouviu "não sei" e seguiu em frente, ou nem chegou a perguntar? Então "nao". Responda com honestidade, é essa resposta que decide se a pessoa vai para a revenda ou para a especialista.
+Nunca marque um critério como "OK" quando a informação não foi obtida. Campo sem informação é "FALHOU", e no caso do volume é "NAO_ESTIMOU".
 ⚠️ VALIDAÇÃO FINAL ANTES DE GERAR O BLOCO (obrigatório toda vez):
 Antes de escrever %%%LEAD_DATA%%%, verifique:
 1. Apliquei a REGRA ZERO? Se a pessoa não quer comprar da Ginger, a classificacao é NAO_LEAD e o resto não se aplica.
 2. O campo "email" OU "telefone" está preenchido? Se AMBOS estão vazios e a classificacao não é NAO_LEAD, NÃO gere o bloco. Peça o contato primeiro.
 3. O campo "nome" está preenchido? Se não, e a classificacao não é NAO_LEAD, NÃO gere o bloco.
 4. O campo "empresa" está preenchido? Se não, e a classificacao não é NAO_LEAD, NÃO gere o bloco.
-5. Se marquei "BOM", os quatro campos criterio_ estão todos "OK"? Se algum está "FALHOU", corrija a classificacao para POTENCIAL_FUTURO.
+5. Se marquei "BOM", os quatro campos criterio_ estão todos "OK"? Se criterio_cnpj, criterio_projeto ou criterio_segmento está "FALHOU", ou criterio_volume está "ABAIXO", corrija a classificacao para POTENCIAL_FUTURO.
+6. Os campos de dados contêm DADOS, e não frases? "telefone" tem que conter algarismos de um telefone, nunca "pelo whatsapp do contato", "o mesmo do WhatsApp", "esse aqui" ou "a combinar". Vale igual para email, cnpj e empresa. Quando a pessoa disser "pode ser esse mesmo" sobre o WhatsApp da conversa, deixe o campo telefone EM BRANCO: o sistema preenche sozinho com o número real do canal, e ele acerta sempre. Escrever a frase no lugar do número apaga o contato do cartão que chega ao comercial.
+7. Se criterio_volume é "NAO_ESTIMOU", o campo volume_insistido está preenchido com "sim" ou "nao"?
 Se qualquer uma dessas validações falhar, continue a conversa e colete a informação faltante. NUNCA gere o bloco incompleto.`;
 // ══════════════════════════════════════════════════════════════
 // ── VALIDAÇÃO E APURAÇÃO
@@ -736,15 +753,46 @@ function validarLead(parsed) {
 // Conta quantos dos quatro critérios de BOM o agente marcou como OK.
 // Serve para estampar o placar no e-mail. Um "BOM 1/4" fica visível no assunto
 // em vez de escondido dentro de uma frase de motivo bem escrita.
+// ── OS TRES ESTADOS DO VOLUME
+// "Nao informou" e "informou e e pequeno" nao sao a mesma coisa, e a regua
+// tratava as duas como FALHOU. O Leonardo, da Cravo Farina, respondeu "nem
+// nocao" quando perguntado, e caiu como POTENCIAL_FUTURO por isso. Uma clinica
+// pode nao ter nocao nenhuma de quantos quilos usa e ainda assim ser um bom
+// cliente. Quem sabe estimar volume de fragrancia e a Ginger, nao o lead.
+// Agora o volume tem tres estados, e cada um leva a um destino diferente:
+//   OK           passou, segue para o comercial
+//   ABAIXO       informou um numero e ele e pequeno, esse sim vai para revenda
+//   NAO_ESTIMOU  nao chegou a estimativa nenhuma
+// Blocos antigos so sabem dizer FALHOU. Para eles vale o desempate pelo campo
+// volume_mensal: se tem numero escrito ali, foi ABAIXO; se esta vazio, ninguem
+// estimou nada.
+function estadoDoVolume(lead) {
+  const v = String(lead.criterio_volume || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+  const declarado = String(lead.volume_mensal || '').trim();
+  const temNumero = declarado && declarado !== '-' && /\d/.test(declarado);
+  if (v === 'OK') return 'OK';
+  if (v === 'ABAIXO' || v === 'ABAIXO_DO_MINIMO') return 'ABAIXO';
+  if (v === 'NAO_ESTIMOU' || v === 'NÃO_ESTIMOU' || v === 'NAO_INFORMADO' || v === 'NÃO_INFORMADO') return 'NAO_ESTIMOU';
+  if (v === 'FALHOU') return temNumero ? 'ABAIXO' : 'NAO_ESTIMOU';
+  if (!v) return 'NAO APURADO';
+  return v;
+}
+// O agente insistiu de verdade pela estimativa, ou desistiu na primeira
+// negativa? Quem nao insistiu nao pode empurrar o lead para a revenda.
+function insistiuNoVolume(lead) {
+  return /^s/i.test(String(lead.volume_insistido || '').trim());
+}
 function placarCriterios(lead) {
   const campos = ['criterio_cnpj', 'criterio_projeto', 'criterio_volume', 'criterio_segmento'];
   let ok = 0, informados = 0;
   const detalhe = {};
   for (const c of campos) {
-    const v = String(lead[c] || '').trim().toUpperCase();
-    if (v) informados++;
+    const v = c === 'criterio_volume'
+      ? estadoDoVolume(lead)
+      : (String(lead[c] || '').trim().toUpperCase() || 'NAO APURADO');
+    if (v !== 'NAO APURADO') informados++;
     if (v === 'OK') ok++;
-    detalhe[c] = v || 'NAO APURADO';
+    detalhe[c] = v;
   }
   return { ok, informados, detalhe };
 }
@@ -762,11 +810,34 @@ function corrigirClassificacaoSeInconsistente(lead) {
     return { corrigido: false, classificacao: classif };
   }
   const placar = placarCriterios(lead);
-  if (placar.informados === 4 && placar.ok < 4) {
-    lead.classificacao = 'POTENCIAL_FUTURO';
+  if (placar.informados !== 4 || placar.ok === 4) return { corrigido: false, classificacao: 'BOM' };
+  // ── O VOLUME NAO REPROVA SOZINHO QUANDO NINGUEM INSISTIU
+  // Regra do Pedro, 18/08: pedir pelo menos uma estimativa. Se depois de
+  // insistir a pessoa continuar sem conseguir estimar, o caminho dela e a
+  // revenda, e ai o rebaixamento esta certo. O que nao pode e o agente aceitar
+  // "nem nocao" de primeira, seguir a conversa, prometer especialista, e o
+  // backend rebaixar em silencio uma empresa que talvez comprasse tonelada.
+  // Nesse caso o defeito e do agente, e quem paga por ele nao pode ser o lead:
+  // o lead segue BOM e o e-mail avisa que falta confirmar o volume na ligacao.
+  const volume = placar.detalhe.criterio_volume;
+  const outrosReprovados = ['criterio_cnpj', 'criterio_projeto', 'criterio_segmento']
+    .filter(c => placar.detalhe[c] !== 'OK');
+  if (!outrosReprovados.length && volume === 'NAO_ESTIMOU' && !insistiuNoVolume(lead)) {
+    lead.volumeAConfirmar = true;
     const antes = lead.motivo_classificacao || '';
     lead.motivo_classificacao =
-      `Rebaixado automaticamente, ${placar.ok} de 4 critérios atendidos. Motivo original: ${antes}`;
+      `Volume a confirmar na ligação, o agente não insistiu pela estimativa. ${antes}`.trim();
+    console.log('BOM mantido com volume a confirmar (agente não insistiu):', lead.nome, lead.empresa);
+    return { corrigido: false, classificacao: 'BOM' };
+  }
+  {
+    lead.classificacao = 'POTENCIAL_FUTURO';
+    const antes = lead.motivo_classificacao || '';
+    const porQue = !outrosReprovados.length && volume === 'NAO_ESTIMOU'
+      ? 'não chegou a nenhuma estimativa de volume mesmo depois de insistirmos, direcionado às revendas'
+      : `${placar.ok} de 4 critérios atendidos`;
+    lead.motivo_classificacao =
+      `Rebaixado automaticamente, ${porQue}. Motivo original: ${antes}`;
     // O rebaixamento acontece DEPOIS que a mensagem de encerramento ja saiu.
     // Como o agente se achava diante de um BOM, ele ja prometeu ao lead que
     // uma especialista entraria em contato. A promessa esta feita e nao da
@@ -785,6 +856,48 @@ function limparTelefone(tel) {
   if (!limpo.startsWith('55')) limpo = '55' + limpo;
   if (limpo.length < 12 || limpo.length > 13) return null;
   return limpo;
+}
+// ── TELEFONE QUE A JULIANA CONSEGUE DISCAR
+// A Meta entrega o celular brasileiro quase sempre SEM o nono digito, e a
+// chaveNumero remove o nono de proposito para nao duplicar conversa. O efeito
+// colateral e que o numero que aparecia no e-mail ("555198338115") nao completa
+// chamada nenhuma: falta o 9. Esta funcao devolve o numero de volta ao formato
+// que se disca, e o link de WhatsApp junto.
+// Celular brasileiro comeca em 6, 7, 8 ou 9. Fixo comeca em 2, 3, 4 ou 5 e nao
+// leva nono digito.
+function numeroDiscavel(bruto) {
+  if (!bruto) return null;
+  let n = String(bruto).replace(/\D/g, '');
+  if (!n) return null;
+  if (n.startsWith('0')) n = n.substring(1);
+  if (!n.startsWith('55')) n = '55' + n;
+  const ddd = n.slice(2, 4);
+  let assinante = n.slice(4);
+  if (assinante.length === 8 && /^[6-9]/.test(assinante)) assinante = '9' + assinante;
+  if (ddd.length !== 2 || (assinante.length !== 8 && assinante.length !== 9)) return null;
+  const e164 = '55' + ddd + assinante;
+  const corte = assinante.length === 9 ? 5 : 4;
+  return {
+    e164,
+    formatado: `(${ddd}) ${assinante.slice(0, corte)}-${assinante.slice(corte)}`,
+    wa: `https://wa.me/${e164}`
+  };
+}
+// ── DE ONDE SAI O TELEFONE DO LEAD
+// O lead responde "esse mesmo", "pode ser esse aqui", "o do WhatsApp". O modelo
+// obedece e escreve isso no campo telefone, que e um campo de dados, nao de
+// conversa. Foi o que chegou para a Juliana no cartao do Leonardo, em 18/08:
+// "Telefone: pelo whatsapp do contato". Sem numero nenhum.
+// O auto-preenchimento existia desde a v22, mas so agia com o campo VAZIO.
+// Texto qualquer passava reto. Agora a regra e outra: o campo tem que conter um
+// telefone de verdade. Se nao contiver, vale o numero do canal, que o sistema
+// sempre sabe qual e.
+function telefoneDoLead(informadoPeloModelo, numeroDoCanal) {
+  const doModelo = numeroDiscavel(limparTelefone(informadoPeloModelo));
+  if (doModelo) return doModelo.formatado;
+  const doCanal = numeroDiscavel(numeroDoCanal);
+  if (doCanal) return doCanal.formatado;
+  return '';
 }
 function isHorarioComercial() {
   const agora = new Date();
@@ -1468,7 +1581,7 @@ app.get('/', (req, res) => {
     canal: 'WhatsApp Cloud API (Meta)',
     redis: REDIS_URL ? 'configurado' : 'não configurado',
     phoneNumberId: WA_PHONE_ID ? 'configurado' : 'NÃO CONFIGURADO',
-    versao: 'sessao 22, regua de qualificacao corrigida'
+    versao: 'sessao 24, telefone do canal e volume em tres estados'
   });
 });
 // ── ROTA: CHAT DO SITE
@@ -1553,6 +1666,15 @@ async function completarDadosLead(rowIndex, parsed) {
   }
 }
 async function tratarBlocoLead(parsed, ctx) {
+  // Ponto unico de saneamento do telefone. Todos os canais passam por aqui, o
+  // WhatsApp, o site, o Instagram, o Facebook e o /reprocessar, entao a regra
+  // mora em um lugar so e nao adianta um caminho novo esquecer dela.
+  // No Instagram e no Facebook a chave do canal ("ig:178...") NAO e telefone, e
+  // deixar ela virar numero inventaria um contato que nao existe. So entra como
+  // fallback a chave que for so digito.
+  const soDigitos = v => /^\d{10,15}$/.test(String(v || '').replace(/\D/g, '')) && /^[\d\s()+-]+$/.test(String(v || ''));
+  const canalTelefonico = soDigitos(ctx.telefone) ? ctx.telefone : (soDigitos(ctx.idCanal) ? ctx.idCanal : '');
+  parsed.telefone = telefoneDoLead(parsed.telefone, canalTelefonico);
   const rowIndex = await garantirLinhaDoContato({
     idCanal: ctx.idCanal,
     telefone: ctx.telefone,
@@ -3449,7 +3571,11 @@ const PEDIDO_DE_BLOCO =
   'não cumprimente, não faça perguntas.\n' +
   'Releia a conversa inteira e devolve APENAS o bloco %%%LEAD_DATA%%% preenchido com o que ' +
   'a pessoa efetivamente informou, seguindo a régua e a REGRA DO CAMPO VAZIO. ' +
-  'Campo que não foi informado fica em branco e o critério correspondente é FALHOU. ' +
+  'Campo que não foi informado fica em branco e o critério correspondente é FALHOU. '
+  + 'Exceção do volume: se a pessoa não chegou a nenhuma estimativa, criterio_volume é '
+  + '"NAO_ESTIMOU", e volume_insistido diz se o agente subiu os três degraus ("sim") ou '
+  + 'aceitou o primeiro "não sei" e seguiu adiante ("nao"). Se ela estimou e o número é '
+  + 'pequeno, criterio_volume é "ABAIXO". ' +
   'Não invente nada. Sua resposta deve começar em %%%LEAD_DATA%%% e terminar em %%%END_LEAD_DATA%%%.';
 app.get('/reprocessar', async (req, res) => {
   if (!exigeChave(req, res)) return;
@@ -4148,7 +4274,7 @@ function destinoDoEmail(lead, placar) {
   }
   if (classe === 'BOM') {
     return { para: comercial.length ? comercial : triagem, rotulo: 'comercial',
-      assunto: `Lead ${corpo}` };
+      assunto: lead.volumeAConfirmar ? `[VOLUME A CONFIRMAR] Lead ${corpo}` : `Lead ${corpo}` };
   }
   // Dado faltando nao pode virar silencio nem virar ruido na caixa do
   // comercial. Vai para a triagem com rotulo proprio, para o Pedro decidir
@@ -4173,12 +4299,26 @@ async function enviarEmailLead(lead, numero = null) {
   // nenhum humano sabia que devia dar. O e-mail passa a sair sempre, e o que
   // falta aparece em destaque no topo do cartao.
   const placar = placarCriterios(lead);
-  const cor = v => v === 'OK' ? '#1B7F4B' : (v === 'FALHOU' ? '#C0392B' : '#888888');
+  // Vermelho e "reprovou". Ambar e "ninguem apurou". Pintar as duas de vermelho
+  // fazia a Juliana ler descarte onde havia so pergunta em aberto.
+  const cor = v => v === 'OK' ? '#1B7F4B'
+    : (v === 'FALHOU' || v === 'ABAIXO' ? '#C0392B'
+    : (v === 'NAO_ESTIMOU' ? '#B7791F' : '#888888'));
+  const rotuloEstado = v => v === 'ABAIXO' ? 'ABAIXO DO MÍNIMO'
+    : (v === 'NAO_ESTIMOU' ? 'NÃO ESTIMADO' : v);
   const linhaCriterio = (rotulo, chave, extra) => `
       <tr>
         <td><b>${rotulo}</b></td>
-        <td style="color:${cor(placar.detalhe[chave])}"><b>${placar.detalhe[chave]}</b>${extra ? ` <span style="color:#555">(${extra})</span>` : ''}</td>
+        <td style="color:${cor(placar.detalhe[chave])}"><b>${rotuloEstado(placar.detalhe[chave])}</b>${extra ? ` <span style="color:#555">(${extra})</span>` : ''}</td>
       </tr>`;
+  const avisoVolume = lead.volumeAConfirmar ? `
+    <div style="border-left:4px solid #B7791F;background:#FEF6E7;padding:12px 14px;margin:0 0 14px">
+      <b style="color:#B7791F">VOLUME AINDA NÃO APURADO. CONFIRME NA LIGAÇÃO.</b><br>
+      Este lead passou em CNPJ, projeto e segmento. O volume ficou em aberto porque
+      o agente não conseguiu uma estimativa, e ele NÃO foi rebaixado por isso.
+      Pode ser um cliente grande que só não sabe traduzir a necessidade em quilos.
+      A conversa sobre quantidade é com você.
+    </div>` : '';
   const avisoPromessa = lead.promessaDeEspecialistaPendente ? `
     <div style="border-left:4px solid #C0392B;background:#FDECEA;padding:12px 14px;margin:0 0 14px">
       <b style="color:#C0392B">ATENÇÃO, ESTA PESSOA ESTÁ ESPERANDO UM CONTATO.</b><br>
@@ -4199,12 +4339,25 @@ async function enviarEmailLead(lead, numero = null) {
         ? 'ATENÇÃO: não há e-mail nem telefone, então só dá para alcançá-la pelo próprio canal da conversa.'
         : 'Vale um contato mesmo com o cadastro incompleto.'}
     </div>` : '';
+  // O cartao mostrava a chave canonica do canal, que e o numero SEM o nono
+  // digito. Ninguem completa chamada com aquilo. Agora sai discavel e com link.
+  const doCanal = numeroDiscavel(numero);
+  const linhaCanal = numero
+    ? `<p><b>Número WhatsApp:</b> ${doCanal
+        ? `${doCanal.formatado} — <a href="${doCanal.wa}">abrir conversa</a>`
+        : numero}</p>`
+    : '';
+  const doLead = numeroDiscavel(limparTelefone(lead.telefone));
+  const celulaTelefone = lead.telefone
+    ? (doLead ? `${lead.telefone} — <a href="${doLead.wa}">WhatsApp</a>` : lead.telefone)
+    : '-';
   const html = `
     <h2 style="color:#47166B">Novo Lead ${lead.classificacao || 'sem classificação'} — Ginger Agente</h2>
     ${avisoIncompleto}
     ${avisoPromessa}
+    ${avisoVolume}
     <p style="font-size:16px"><b>Apuração dos critérios: ${placar.ok} de 4</b></p>
-    ${numero ? `<p><b>Número WhatsApp:</b> ${numero}</p>` : ''}
+    ${linhaCanal}
     <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%">
       <tr style="background:#F2EAF7"><td colspan="2"><b>APURAÇÃO</b></td></tr>
       ${linhaCriterio('CNPJ confirmado', 'criterio_cnpj', lead.cnpj)}
@@ -4219,7 +4372,7 @@ async function enviarEmailLead(lead, numero = null) {
       <tr><td><b>Empresa</b></td><td>${lead.empresa || '-'}</td></tr>
       <tr><td><b>CNPJ</b></td><td>${lead.cnpj || '-'}</td></tr>
       <tr><td><b>Email</b></td><td>${lead.email || '-'}</td></tr>
-      <tr><td><b>Telefone</b></td><td>${lead.telefone || '-'}</td></tr>
+      <tr><td><b>Telefone</b></td><td>${celulaTelefone}</td></tr>
       <tr><td><b>Funcionários</b></td><td>${lead.funcionarios || '-'}</td></tr>
       <tr><td><b>Segmento</b></td><td>${lead.segmento || '-'}</td></tr>
       <tr><td><b>Fornecedor Atual</b></td><td>${lead.fornecedor_atual || '-'}</td></tr>

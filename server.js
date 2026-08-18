@@ -641,6 +641,11 @@ sim/não, e depois do "sim" não sobra mensagem nova para dar.
 Quando você concluir que já entendeu o projeto, encerre de uma vez, na MESMA
 mensagem: agradeça, diga que vai acionar a especialista e que ela entra em
 contato em breve, e pare. Não anuncie que vai encerrar para encerrar depois.
+⚠️ VOLUME: PERGUNTE SEMPRE, ANTES DE ENCERRAR ⚠️
+Volume é o critério que você mais esquece de perguntar, e quando você não pergunta, o critério é reprovado e o lead é rebaixado por uma falha SUA, não dele. Isso já custou lead bom.
+Antes de encerrar qualquer conversa que não seja NAO_LEAD, faça a pergunta de volume, mesmo que a conversa esteja fluindo bem e mesmo que a pessoa pareça pequena. Uma linha basta: "Você já tem uma ideia de volume mensal, ou de quantos quilos por fragrância?"
+Se a pessoa não souber estimar, tudo bem, registre que não soube informar. O que não pode acontecer é você encerrar sem ter perguntado.
+
 ⚠️ NUNCA PROMETA A ESPECIALISTA SEM TER O NOME DA EMPRESA ⚠️
 "Vou acionar nossa especialista" é um compromisso da Ginger com aquela pessoa, e depois de dito não dá para desfazer. Do outro lado alguém passa a esperar um telefonema.
 Antes de dizer essa frase, confirme que você tem as TRÊS coisas: nome da pessoa, NOME DA EMPRESA e pelo menos um e-mail ou telefone. Faltando qualquer uma, você não encerra e não promete nada, você pergunta o que falta.
@@ -749,6 +754,13 @@ function placarCriterios(lead) {
 function corrigirClassificacaoSeInconsistente(lead) {
   const classif = classificacaoNormalizada(lead);
   if (classif !== 'BOM') return { corrigido: false, classificacao: classif };
+  // Quando um humano revisou a conversa e decidiu, a decisao dele manda.
+  // Sem esta saida, a revisao manual seria desfeita na linha seguinte pelo
+  // proprio rebaixamento que ela veio corrigir.
+  if (lead.decisaoHumana) {
+    console.log('Rebaixamento automático não aplicado: classificação definida por decisão humana:', lead.nome);
+    return { corrigido: false, classificacao: classif };
+  }
   const placar = placarCriterios(lead);
   if (placar.informados === 4 && placar.ok < 4) {
     lead.classificacao = 'POTENCIAL_FUTURO';
@@ -3393,6 +3405,224 @@ app.get('/promessas-pendentes', async (req, res) => {
     });
   } catch(e) {
     console.error('Erro ao levantar promessas pendentes:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+// ══════════════════════════════════════════════════════════════
+// ── ROTA: REPROCESSAR UMA CONVERSA JÁ ENCERRADA
+// ══════════════════════════════════════════════════════════════
+// Ate 18/08 um lead com campo faltando era descartado em silencio. O bloco de
+// dados que o agente gerou foi jogado fora e nao existe mais em lugar nenhum.
+// A correcao no tratarBlocoLead impede novos casos, mas nao ressuscita os que
+// ja aconteceram: a Alessandra concluiu a conversa em 14/08, ouviu que uma
+// especialista ligaria, e ficou dias invisivel.
+// Esta rota reconstroi a conversa a partir da aba Conversas, entrega ao mesmo
+// modelo com o mesmo prompt, e pede SO o bloco de dados. Dali em diante segue
+// pelo caminho normal: tratarBlocoLead grava na planilha e enviarEmailLead
+// avisa quem tem que ser avisado.
+// Previa por padrao. So grava e so envia e-mail com &aplicar=1.
+// &classificacao=BOM sobrescreve o veredito do modelo quando a decisao ja foi
+// tomada por um humano, e isso fica registrado no motivo.
+async function montarHistoricoDaPlanilha(chaveAlvo) {
+  const sheets = await getSheetsClient();
+  if (!sheets) return null;
+  const r = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID, range: `${SHEET_CONVERSAS}!A:E`
+  });
+  const linhas = [];
+  for (const l of (r.data.values || []).slice(1)) {
+    if (chaveConversa(l[1] || '') !== chaveAlvo) continue;
+    linhas.push({
+      data: l[0] || '',
+      role: (l[2] || '').toLowerCase() === 'recebida' ? 'user' : 'assistant',
+      content: String(l[3] || '')
+    });
+  }
+  linhas.sort((a, b) => parseDataBrasil(a.data) - parseDataBrasil(b.data));
+  // O modelo recusa historico que comeca pelo assistant.
+  while (linhas.length && linhas[0].role !== 'user') linhas.shift();
+  return linhas.filter(m => m.content.trim());
+}
+const PEDIDO_DE_BLOCO =
+  '[INSTRUÇÃO INTERNA DE AUDITORIA, NÃO É MENSAGEM DO LEAD]\n' +
+  'A conversa acima já terminou e não vai continuar. Não escreva resposta para o lead, ' +
+  'não cumprimente, não faça perguntas.\n' +
+  'Releia a conversa inteira e devolve APENAS o bloco %%%LEAD_DATA%%% preenchido com o que ' +
+  'a pessoa efetivamente informou, seguindo a régua e a REGRA DO CAMPO VAZIO. ' +
+  'Campo que não foi informado fica em branco e o critério correspondente é FALHOU. ' +
+  'Não invente nada. Sua resposta deve começar em %%%LEAD_DATA%%% e terminar em %%%END_LEAD_DATA%%%.';
+app.get('/reprocessar', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const alvo = chaveConversa((req.query.contato || '').trim());
+  const aplicar = req.query.aplicar === '1';
+  const forcar = (req.query.classificacao || '').trim().toUpperCase();
+  if (!alvo) return res.status(400).json({ erro: 'informe &contato=<telefone ou id do canal>' });
+  if (forcar && !CLASSIFICACOES_VALIDAS.includes(forcar)) {
+    return res.status(400).json({ erro: 'classificacao inválida', validas: CLASSIFICACOES_VALIDAS });
+  }
+  try {
+    const historico = await montarHistoricoDaPlanilha(alvo);
+    if (!historico) return res.status(500).json({ erro: 'sheets indisponivel' });
+    if (!historico.length) return res.status(404).json({ erro: 'nenhuma conversa encontrada', contato: alvo });
+    const mensagens = historico.map(m => ({ role: m.role, content: m.content }));
+    mensagens.push({ role: 'user', content: PEDIDO_DE_BLOCO });
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6', max_tokens: 1000,
+        system: SYSTEM_PROMPT, messages: mensagens
+      })
+    });
+    const data = await r.json();
+    const bruto = data.content?.[0]?.text || '';
+    const match = bruto.match(/%%%LEAD_DATA%%%([\s\S]*?)%%%END_LEAD_DATA%%%/);
+    if (!match) {
+      return res.status(422).json({
+        erro: 'o modelo não devolveu o bloco de dados',
+        contato: alvo, respostaCrua: bruto.substring(0, 600)
+      });
+    }
+    let parsed;
+    try { parsed = JSON.parse(match[1].trim()); }
+    catch(e) { return res.status(422).json({ erro: 'bloco veio malformado', detalhe: e.message,
+      contato: alvo, bloco: match[1].substring(0, 600) }); }
+    if (!parsed.telefone && !alvo.startsWith(IG_PREFIXO) && !alvo.startsWith(FB_PREFIXO)
+        && !alvo.startsWith('site-')) {
+      parsed.telefone = alvo;
+    }
+    if (forcar) {
+      const antes = classificacaoNormalizada(parsed) || 'sem classificação';
+      parsed.classificacao = forcar;
+      parsed.motivo_classificacao =
+        `Classificado como ${forcar} por decisão humana na revisão de ${agoraBrasil().split(' ')[0]}. ` +
+        `O agente havia concluído ${antes}. Motivo original: ${parsed.motivo_classificacao || '-'}`;
+      // Decisao humana manda. Sem isso o rebaixamento automatico desfaria a
+      // correcao no passo seguinte, e o lead voltaria para o mesmo buraco.
+      parsed.decisaoHumana = true;
+    }
+    const faltando = camposFaltantes(parsed);
+    const placar = placarCriterios(parsed);
+    if (!aplicar) {
+      return res.json({
+        modo: 'PRÉVIA, nada foi gravado e nenhum e-mail foi enviado',
+        contato: alvo, canal: canalDaChave(alvo),
+        mensagensLidas: historico.length,
+        classificacaoForcada: forcar || null,
+        blocoQueSeriaGravado: parsed,
+        placar: `${placar.ok}/4`, criterios: placar.detalhe,
+        camposFaltantes: faltando,
+        comoAplicar: 'acrescente &aplicar=1 no endereço',
+        oQueAcontece: 'Grava classificação, motivo e dados cadastrais na linha do contato, ' +
+          'e dispara o e-mail para quem a classificação determinar. O e-mail SAI DE VERDADE.'
+      });
+    }
+    const lead = await tratarBlocoLead(parsed, {
+      idCanal: alvo, telefone: parsed.telefone || '',
+      origem: canalDaChave(alvo) === 'WhatsApp' ? 'bot-site' :
+              canalDaChave(alvo) === 'Instagram' ? 'bot-instagram' :
+              canalDaChave(alvo) === 'Facebook' ? 'bot-facebook' : 'bot-site',
+      canal: canalDaChave(alvo), nomeFallback: parsed.nome || ''
+    });
+    let emailEnviado = false, erroEmail = null;
+    if (lead) {
+      try { await enviarEmailLead(lead, alvo); emailEnviado = true; }
+      catch(e) { erroEmail = e.message; }
+    }
+    console.log(`Reprocessamento de ${alvo}: ${classificacaoNormalizada(parsed)}, e-mail ${emailEnviado ? 'enviado' : 'NÃO enviado'}`);
+    res.json({
+      modo: 'APLICADO', contato: alvo,
+      classificacao: classificacaoNormalizada(parsed),
+      classificacaoForcada: forcar || null,
+      placar: `${placar.ok}/4`, camposFaltantes: faltando,
+      gravadoNaPlanilha: !!lead, emailEnviado, erroEmail,
+      destinatarios: lead ? destinoDoEmail(lead, placar).para : [],
+      bloco: parsed
+    });
+  } catch(e) {
+    console.error('Erro ao reprocessar conversa:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+// ══════════════════════════════════════════════════════════════
+// ── ROTA: VARREDURA DOS LEADS MUDOS
+// ══════════════════════════════════════════════════════════════
+// Um lead "mudo" e alguem que conversou de verdade, teve a conversa
+// encerrada pelo agente, e nao tem classificacao nenhuma na planilha. Ou o
+// bloco foi descartado em silencio, ou o agente nunca o gerou. Nos dois casos
+// o resultado e o mesmo: ninguem foi avisado e a pessoa ficou esperando.
+// Rota de leitura. Devolve, para cada caso, o endereco do /reprocessar.
+app.get('/leads-mudos', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const minimo = Math.max(2, parseInt(req.query.min || '4', 10));
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
+    const [rl, rc] = await Promise.all([
+      sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A:O` }),
+      sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_CONVERSAS}!A:E` })
+    ]);
+    const naPlanilha = {};
+    (rl.data.values || []).slice(1).forEach((row, i) => {
+      const info = { linha: i + 2, nome: row[1] || '', empresa: row[4] || '',
+        telefone: row[3] || '', qualificacao: (row[10] || '').trim(), status: (row[8] || '').trim() };
+      const kCanal = chaveConversa(row[COL_ID_CANAL] || '');
+      const kTel = chaveNumero(row[3] || '');
+      if (kCanal) naPlanilha[kCanal] = info;
+      if (kTel && !naPlanilha[kTel]) naPlanilha[kTel] = info;
+    });
+    const porChave = {};
+    for (const l of (rc.data.values || []).slice(1)) {
+      const bruto = l[1] || '';
+      if (!bruto || bruto === 'teste-escrita') continue;
+      const chave = chaveConversa(bruto);
+      if (!chave) continue;
+      if (!porChave[chave]) porChave[chave] = { chave, recebidas: 0, enviadas: 0,
+        primeira: l[0] || '', ultima: l[0] || '', prometeu: false, amostra: '' };
+      const g = porChave[chave];
+      const enviada = (l[2] || '').toLowerCase() === 'enviada';
+      if (enviada) g.enviadas++; else {
+        g.recebidas++;
+        if (!g.amostra) g.amostra = String(l[3] || '').substring(0, 120);
+      }
+      if (enviada && PADROES_PROMESSA.some(p => p.test(String(l[3] || '')))) g.prometeu = true;
+      if (parseDataBrasil(l[0]) < parseDataBrasil(g.primeira)) g.primeira = l[0] || '';
+      if (parseDataBrasil(l[0]) >= parseDataBrasil(g.ultima)) g.ultima = l[0] || '';
+    }
+    const mudos = [];
+    for (const g of Object.values(porChave)) {
+      const info = naPlanilha[g.chave] || {};
+      if ((info.qualificacao || '').trim()) continue;         // ja classificado
+      if (g.recebidas < minimo && !g.prometeu) continue;      // conversa curta demais
+      mudos.push({
+        chave: g.chave, canal: canalDaChave(g.chave),
+        linha: info.linha || null, naPlanilha: !!info.linha,
+        nome: info.nome || '', empresa: info.empresa || '',
+        mensagensDoLead: g.recebidas, mensagensDoAgente: g.enviadas,
+        primeira: g.primeira, ultima: g.ultima,
+        prometeuContato: g.prometeu,
+        status: info.status || '(sem status)',
+        primeiraFala: g.amostra,
+        reprocessar: `/reprocessar?chave=SUA_CHAVE&contato=${encodeURIComponent(g.chave)}`
+      });
+    }
+    mudos.sort((a, b) => (b.prometeuContato - a.prometeuContato)
+      || (parseDataBrasil(b.ultima) - parseDataBrasil(a.ultima)));
+    res.json({
+      modo: 'somente leitura, nada foi alterado',
+      criterio: `conversas sem classificação na coluna K, com pelo menos ${minimo} mensagens do lead OU com promessa de contato`,
+      total: mudos.length,
+      comPromessaDeContato: mudos.filter(m => m.prometeuContato).length,
+      leiaAssim: 'Cada item aqui é alguém que conversou e não gerou classificação nem e-mail. ' +
+        'Abra a conversa no painel, confira, e use a rota /reprocessar em modo prévia antes de aplicar.',
+      leads: mudos
+    });
+  } catch(e) {
+    console.error('Erro na varredura de leads mudos:', e.message);
     res.status(500).json({ erro: e.message });
   }
 });

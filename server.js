@@ -3627,6 +3627,159 @@ app.get('/leads-mudos', async (req, res) => {
   }
 });
 // ══════════════════════════════════════════════════════════════
+// ── ROTA: AUDITORIA DE COERÊNCIA DO FUNIL
+// ══════════════════════════════════════════════════════════════
+// O /saude responde "os canais estao de pe". Isso nao diz nada sobre a
+// qualidade do que passou por eles. A Alessandra concluiu a conversa, ficou
+// dias invisivel, e durante todo esse tempo o /saude respondia "tudo ok",
+// porque nada estava quebrado: o dado e que estava errado.
+// Esta rota confere o CONTEUDO. Ela cruza a planilha de leads com o historico
+// de conversas e procura contradicoes que so um humano notaria lendo tudo.
+// Rota de leitura. Nao escreve, nao envia e-mail, nao altera nada.
+// Responde HTTP 500 quando ha achado CRITICO, para monitor externo detectar.
+app.get('/auditoria', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const limite = Math.max(1, parseInt(req.query.amostra || '8', 10));
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
+    const [rl, rc] = await Promise.all([
+      sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A:O` }),
+      sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_CONVERSAS}!A:E` })
+    ]);
+    const rows = (rl.data.values || []);
+    // ── historico agrupado por contato
+    const conv = {};
+    for (const l of (rc.data.values || []).slice(1)) {
+      const bruto = l[1] || '';
+      if (!bruto || bruto === 'teste-escrita') continue;
+      const chave = chaveConversa(bruto);
+      if (!chave) continue;
+      if (!conv[chave]) conv[chave] = { recebidas: 0, enviadas: 0, prometeu: false, ultima: '' };
+      const g = conv[chave];
+      const enviada = (l[2] || '').toLowerCase() === 'enviada';
+      if (enviada) {
+        g.enviadas++;
+        if (PADROES_PROMESSA.some(p => p.test(String(l[3] || '')))) g.prometeu = true;
+      } else g.recebidas++;
+      if (!g.ultima || parseDataBrasil(l[0]) > parseDataBrasil(g.ultima)) g.ultima = l[0] || '';
+    }
+    // ── leads indexados
+    const leads = [];
+    const porTelefone = {};
+    const chavesComLinha = new Set();
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i] || [];
+      const kCanal = chaveConversa(r[COL_ID_CANAL] || '');
+      const kTel = chaveNumero(r[3] || '');
+      const chave = kCanal || kTel || '';
+      if (kCanal) chavesComLinha.add(kCanal);
+      if (kTel) chavesComLinha.add(kTel);
+      const lead = {
+        linha: i + 1, nome: r[1] || '', email: r[2] || '', telefone: r[3] || '',
+        empresa: r[4] || '', cnpj: r[7] || '', status: (r[8] || '').trim(),
+        origem: (r[9] || '').trim(), qual: (r[10] || '').trim().toUpperCase(),
+        motivo: (r[11] || '').trim(), chave,
+        c: conv[chave] || { recebidas: 0, enviadas: 0, prometeu: false, ultima: '' }
+      };
+      leads.push(lead);
+      if (kTel && !(lead.status || '').toLowerCase().includes('duplicad')) {
+        (porTelefone[kTel] = porTelefone[kTel] || []).push(lead.linha);
+      }
+    }
+    const achados = [];
+    const registra = (chave, gravidade, titulo, oQueFazer, itens) => {
+      if (!itens.length) return;
+      achados.push({
+        chave, gravidade, titulo, quantidade: itens.length, oQueFazer,
+        amostra: itens.slice(0, limite),
+        truncado: itens.length > limite ? itens.length - limite : 0
+      });
+    };
+    const id = l => ({ linha: l.linha, nome: l.nome || '(sem nome)',
+      empresa: l.empresa || '', contato: l.telefone || l.chave, qual: l.qual || '(vazia)' });
+
+    // 1. CRITICO — conversou, ouviu promessa, e nao tem classificacao.
+    // Foi exatamente aqui que a Alessandra e a Natiara sumiram.
+    registra('mudo_com_promessa', 'critico',
+      'Ouviu promessa de contato e não tem classificação',
+      'Rode /reprocessar em modo prévia para cada um e aplique.',
+      leads.filter(l => !l.qual && l.c.prometeu).map(id));
+
+    // 2. CRITICO — conversa longa concluida sem classificacao nenhuma.
+    registra('mudo', 'critico',
+      'Conversou de verdade e não gerou classificação',
+      'Confira no painel e rode /reprocessar. Se for lixo do chat do site, ignore.',
+      leads.filter(l => !l.qual && l.c.recebidas >= 4 && !l.c.prometeu).map(id));
+
+    // 3. CRITICO — BOM sem contato nenhum. O comercial nao consegue ligar.
+    registra('bom_sem_contato', 'critico',
+      'Classificado BOM e sem e-mail nem telefone',
+      'Sem canal de contato o comercial não consegue dar seguimento nenhum.',
+      leads.filter(l => l.qual === 'BOM' && !l.email.trim() && !l.telefone.trim()).map(id));
+
+    // 4. ATENCAO — NAO_LEAD que ouviu promessa de retorno.
+    // O prompt proibe, mas prompt e instrucao. Aqui a gente confere.
+    registra('naolead_com_promessa', 'atencao',
+      'NAO_LEAD que ouviu promessa de retorno',
+      'O agente prometeu contato a quem não é comprador. Se repetir, a regra do prompt não está pegando.',
+      leads.filter(l => l.qual === 'NAO_LEAD' && l.c.prometeu).map(id));
+
+    // 5. ATENCAO — classificacao sem motivo. Perde a rastreabilidade.
+    registra('sem_motivo', 'atencao',
+      'Tem classificação e não tem motivo',
+      'Sem o motivo ninguém consegue auditar por que aquele lead foi aprovado ou reprovado.',
+      leads.filter(l => l.qual && !l.motivo).map(id));
+
+    // 6. ATENCAO — conversou e nunca ganhou linha na planilha.
+    const orfaos = Object.keys(conv)
+      .filter(k => !k.startsWith('site-') && !chavesComLinha.has(k) && conv[k].recebidas > 0)
+      .map(k => ({ contato: k, canal: canalDaChave(k), mensagensDoLead: conv[k].recebidas,
+        ultima: conv[k].ultima }));
+    registra('orfao', 'atencao',
+      'Conversou e não existe na planilha',
+      'Rode /recuperar-orfaos em modo prévia.', orfaos);
+
+    // 7. ATENCAO — mesmo telefone em mais de uma linha viva.
+    const dups = Object.entries(porTelefone).filter(([, ls]) => ls.length > 1)
+      .map(([tel, ls]) => ({ telefone: tel, linhas: ls }));
+    registra('duplicado_telefone', 'atencao',
+      'Mesmo telefone em mais de uma linha',
+      'Infla a contagem de leads captados. Precisa de rota de dedupe por telefone.', dups);
+
+    // 8. INFO — BOM gravado sem os quatro criterios OK.
+    // Legitimo quando foi decisao humana, e o motivo diz isso. Fora disso,
+    // significa que o rebaixamento automatico nao rodou.
+    registra('bom_incoerente', 'info',
+      'BOM com placar abaixo de 4/4',
+      'Esperado quando houve decisão humana, e o motivo registra isso. Fora disso, investigue.',
+      leads.filter(l => l.qual === 'BOM' && !/decisão humana/i.test(l.motivo)
+        && /rebaixad/i.test(l.motivo)).map(id));
+
+    const criticos = achados.filter(a => a.gravidade === 'critico');
+    const atencao = achados.filter(a => a.gravidade === 'atencao');
+    const resumo = criticos.length ? 'TEM PROBLEMA CRÍTICO'
+      : atencao.length ? 'sem crítico, com pontos de atenção'
+      : 'tudo coerente';
+    const corpo = {
+      resumo,
+      verificadoEm: agoraBrasil(),
+      linhasNaPlanilha: rows.length - 1,
+      contatosComConversa: Object.keys(conv).length,
+      criticos: criticos.length, pontosDeAtencao: atencao.length,
+      leiaAssim: 'Crítico é gente que conversou e ficou sem retorno, ou lead que o comercial ' +
+        'não consegue alcançar. Atenção é sujeira de dado, que atrapalha a métrica e não ' +
+        'deixa ninguém esperando.',
+      achados
+    };
+    // Mesmo desenho do /saude: erro no HTTP para monitor externo perceber.
+    res.status(criticos.length ? 500 : 200).json(corpo);
+  } catch(e) {
+    console.error('Erro na auditoria:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+// ══════════════════════════════════════════════════════════════
 // ── ROTA: SAÚDE DO SISTEMA
 // ══════════════════════════════════════════════════════════════
 // O modo de falha mais perigoso deste bot nao e um erro na tela, e o silencio.

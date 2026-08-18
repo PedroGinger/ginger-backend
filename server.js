@@ -484,6 +484,13 @@ Classifique como POTENCIAL_FUTURO com o motivo "Sem CNPJ, direcionado para reven
 SE O CONTATO NÃO SOUBER, ESTIVER ABRINDO EMPRESA OU O CNPJ ESTIVER INATIVO:
 Trate como sem CNPJ por enquanto, direcione para as revendas do mesmo jeito, e diga que quando o CNPJ estiver ativo a Ginger tem prazer em conversar sobre o projeto.
 NUNCA insista depois de um não. NUNCA sugira que a pessoa use o CNPJ de um conhecido, de um parceiro ou de terceiros. NUNCA dê a entender que existe exceção, jeitinho ou caso especial. A regra vale sempre.
+⚠️ SOBRE O CNAE E O RAMO DO CNPJ ⚠️
+Você NÃO avalia CNAE, não pergunta CNAE e não usa o ramo do CNPJ como critério de qualificação. Não filtre ninguém por causa disso.
+E também NUNCA diga que o ramo não importa, nem garanta que o CNPJ da pessoa serve. Isso não é verdade: o CNAE é avaliado, só que não por você e não agora.
+Se o contato perguntar se o CNPJ dele serve, se o ramo precisa ser do mesmo segmento do produto, ou disser que o CNPJ é de outra atividade, de familiar, do sócio ou de terceiro, a resposta correta é que existir empresa formal é o que permite seguir agora, e que o ramo é avaliado depois, no atendimento com a especialista.
+Modelo: "O que preciso confirmar agora é que existe uma empresa formal, e é isso que permite a gente seguir. O ramo do CNPJ é avaliado mais para frente, no atendimento com a nossa especialista."
+Nunca use a sigla CNAE se o contato não usou primeiro. Fale "o ramo do CNPJ".
+Quando o CNPJ for de outra empresa, de familiar ou de sócio, siga normalmente e pergunte o NOME dessa empresa. É ela que vai para o cadastro, e sem esse nome você não encerra.
 TOM DE VOZ
 ⚠️ REGRA DE TAMANHO DA RESPOSTA — PRIORIDADE MÁXIMA, VALE PARA TODOS OS MODOS ⚠️
 Você está conversando pelo WhatsApp, não escrevendo e-mail. TODA resposta deve ser curta, no máximo 2 a 3 frases curtas. Nunca escreva parágrafos longos, blocos de texto, listas, ou explicações extensas. Diga uma coisa de cada vez e devolva a palavra ao lead, de preferência com uma pergunta simples no fim. Se você tem muito a dizer, divida ao longo da conversa, nunca despeje tudo de uma vez. Mensagem longa parece robô e afasta o lead. Na dúvida entre falar mais ou falar menos, fale menos. Seja breve sempre, mesmo no MODO COMPLETO.
@@ -634,6 +641,11 @@ sim/não, e depois do "sim" não sobra mensagem nova para dar.
 Quando você concluir que já entendeu o projeto, encerre de uma vez, na MESMA
 mensagem: agradeça, diga que vai acionar a especialista e que ela entra em
 contato em breve, e pare. Não anuncie que vai encerrar para encerrar depois.
+⚠️ NUNCA PROMETA A ESPECIALISTA SEM TER O NOME DA EMPRESA ⚠️
+"Vou acionar nossa especialista" é um compromisso da Ginger com aquela pessoa, e depois de dito não dá para desfazer. Do outro lado alguém passa a esperar um telefonema.
+Antes de dizer essa frase, confirme que você tem as TRÊS coisas: nome da pessoa, NOME DA EMPRESA e pelo menos um e-mail ou telefone. Faltando qualquer uma, você não encerra e não promete nada, você pergunta o que falta.
+O nome da empresa é o que mais se perde, porque a conversa gira em torno do produto e ninguém diz espontaneamente como a empresa se chama. Pergunte sempre, de forma simples: "E qual é o nome da empresa?"
+Isso vale inclusive, e principalmente, quando o CNPJ é de terceiro. Nesse caso o nome que interessa é o da empresa do CNPJ, não o do produto nem o da marca que a pessoa quer criar. Marca em criação não é nome de empresa.
 Se você já disse que ia acionar a especialista, NÃO diga de novo. Se o lead
 responder algo curto depois do encerramento ("ok", "combinado", "obrigada",
 "valeu"), responda com UMA frase curta e humana, sem repetir nada do que já foi
@@ -696,13 +708,25 @@ function classificacaoNormalizada(lead) {
 function isNaoLead(lead) {
   return classificacaoNormalizada(lead) === 'NAO_LEAD';
 }
+// Um campo em branco NAO pode fazer o lead inteiro desaparecer.
+// Em 14/08 a Alessandra concluiu a conversa, deu nome, telefone e e-mail,
+// ouviu que a especialista entraria em contato, e sumiu do sistema porque
+// nunca disse o NOME da empresa (o CNPJ era do marido). O lead foi descartado
+// em silencio: sem e-mail, sem classificacao na planilha, sem aviso a ninguem.
+// Agora "empresa" volta a ser o que sempre foi na regua, um criterio que pode
+// reprovar, e deixa de ser uma condicao para o lead existir.
+// O unico impeditivo real e nao haver NENHUM jeito de falar com a pessoa.
+function camposFaltantes(parsed) {
+  const falta = [];
+  const cheio = v => !!(v && String(v).trim() && String(v).trim() !== '-');
+  if (!cheio(parsed.nome)) falta.push('nome');
+  if (!cheio(parsed.empresa)) falta.push('empresa');
+  if (!cheio(parsed.email) && !cheio(parsed.telefone)) falta.push('contato');
+  return falta;
+}
 function validarLead(parsed) {
-  if (!parsed.nome || !parsed.nome.trim()) return false;
-  if (!parsed.empresa || !parsed.empresa.trim()) return false;
-  const temEmail = parsed.email && parsed.email.trim() && parsed.email.trim() !== '-';
-  const temTelefone = parsed.telefone && parsed.telefone.trim() && parsed.telefone.trim() !== '-';
-  if (!temEmail && !temTelefone) return false;
-  return true;
+  const cheio = v => !!(v && String(v).trim() && String(v).trim() !== '-');
+  return cheio(parsed.email) || cheio(parsed.telefone);
 }
 // Conta quantos dos quatro critérios de BOM o agente marcou como OK.
 // Serve para estampar o placar no e-mail. Um "BOM 1/4" fica visível no assunto
@@ -1533,24 +1557,37 @@ async function tratarBlocoLead(parsed, ctx) {
     }
     return null;
   }
-  if (!validarLead(parsed)) {
-    console.log('Lead BLOQUEADO (dados incompletos):', JSON.stringify(parsed).substring(0, 300));
-    return null;
-  }
+  // Sem classificacao a conversa ainda esta em andamento. Nao e conclusao,
+  // entao nao ha nada a registrar nem a avisar. Este e o unico caso em que
+  // sair sem gravar esta correto.
   const temClassificacao = parsed.classificacao && parsed.classificacao.trim() && parsed.classificacao.trim() !== '-';
   if (!temClassificacao) {
     console.log('Lead com dados mas SEM classificação, aguardando conclusão:', parsed.nome);
     return null;
   }
+  // Daqui para baixo a conversa CONCLUIU. A partir deste ponto, aconteça o que
+  // acontecer, alguem fica sabendo. Faltar dado muda o destino e o aviso do
+  // e-mail, nunca faz o lead sumir.
+  const faltando = camposFaltantes(parsed);
+  if (faltando.length) parsed.dadosIncompletos = faltando;
   corrigirClassificacaoSeInconsistente(parsed);
   const placar = placarCriterios(parsed);
-  console.log('Lead VALIDADO:', parsed.nome, parsed.empresa,
-    'Canal:', ctx.canal, 'Classificação:', parsed.classificacao, `Critérios: ${placar.ok}/4`);
+  console.log('Lead CONCLUÍDO:', parsed.nome || '(sem nome)', parsed.empresa || '(sem empresa)',
+    'Canal:', ctx.canal, 'Classificação:', parsed.classificacao, `Critérios: ${placar.ok}/4`,
+    faltando.length ? `FALTA: ${faltando.join(', ')}` : '');
   if (rowIndex) {
-    await atualizarStatus(rowIndex, 'qualificado pelo agente');
+    await atualizarStatus(rowIndex, faltando.length
+      ? `concluído com dados incompletos (falta ${faltando.join(', ')})`
+      : 'qualificado pelo agente');
     await atualizarQualificacao(rowIndex, classificacaoNormalizada(parsed), parsed.motivo_classificacao);
     await atualizarOrigem(rowIndex, ctx.origem);
     await completarDadosLead(rowIndex, parsed);
+  }
+  // Sem nenhum canal de contato ninguem consegue ligar, mas o registro e o
+  // aviso saem do mesmo jeito: e justamente o caso que mais precisa de olho
+  // humano, porque a pessoa conversou, concluiu e ficou inalcancavel.
+  if (!validarLead(parsed)) {
+    console.log('Lead concluído SEM canal de contato, seguindo para triagem:', parsed.nome);
   }
   return parsed;
 }
@@ -3730,6 +3767,13 @@ function destinoDoEmail(lead, placar) {
     return { para: comercial.length ? comercial : triagem, rotulo: 'comercial',
       assunto: `Lead ${corpo}` };
   }
+  // Dado faltando nao pode virar silencio nem virar ruido na caixa do
+  // comercial. Vai para a triagem com rotulo proprio, para o Pedro decidir
+  // se encaminha. O importante e que existe um e-mail e existe um humano.
+  if (Array.isArray(lead.dadosIncompletos) && lead.dadosIncompletos.length) {
+    return { para: triagem, rotulo: 'triagem (dados incompletos)',
+      assunto: `[INCOMPLETO] Lead ${corpo}` };
+  }
   const prefixo = classe === 'POTENCIAL_FUTURO' ? '[POTENCIAL]' : '[RUIM]';
   return { para: triagem, rotulo: 'triagem', assunto: `${prefixo} Lead ${corpo}` };
 }
@@ -3741,10 +3785,10 @@ async function enviarEmailLead(lead, numero = null) {
     console.log('EMAIL BLOQUEADO: NAO_LEAD nao aciona o comercial:', lead.nome, lead.empresa);
     return;
   }
-  if (!validarLead(lead)) {
-    console.log('EMAIL BLOQUEADO: lead sem contato suficiente:', lead.nome, lead.empresa);
-    return;
-  }
+  // Antes, lead com campo faltando era bloqueado aqui e ninguem ficava sabendo.
+  // Foi assim que a Alessandra ficou quatro dias esperando um telefonema que
+  // nenhum humano sabia que devia dar. O e-mail passa a sair sempre, e o que
+  // falta aparece em destaque no topo do cartao.
   const placar = placarCriterios(lead);
   const cor = v => v === 'OK' ? '#1B7F4B' : (v === 'FALHOU' ? '#C0392B' : '#888888');
   const linhaCriterio = (rotulo, chave, extra) => `
@@ -3761,8 +3805,20 @@ async function enviarEmailLead(lead, numero = null) {
       para desfazer, então alguém precisa dar um retorno, mesmo que seja para
       direcionar às revendas.
     </div>` : '';
+  const falta = Array.isArray(lead.dadosIncompletos) ? lead.dadosIncompletos : [];
+  const rotuloFalta = { nome: 'o nome da pessoa', empresa: 'o nome da empresa', contato: 'e-mail e telefone' };
+  const avisoIncompleto = falta.length ? `
+    <div style="border-left:4px solid #C0392B;background:#FDECEA;padding:12px 14px;margin:0 0 14px">
+      <b style="color:#C0392B">CONVERSA CONCLUÍDA COM DADO FALTANDO.</b><br>
+      O agente chegou ao fim da conversa sem obter ${falta.map(f => rotuloFalta[f] || f).join(' e ')}.
+      Essa pessoa conversou até o fim e pode estar esperando um retorno.
+      ${falta.includes('contato')
+        ? 'ATENÇÃO: não há e-mail nem telefone, então só dá para alcançá-la pelo próprio canal da conversa.'
+        : 'Vale um contato mesmo com o cadastro incompleto.'}
+    </div>` : '';
   const html = `
     <h2 style="color:#47166B">Novo Lead ${lead.classificacao || 'sem classificação'} — Ginger Agente</h2>
+    ${avisoIncompleto}
     ${avisoPromessa}
     <p style="font-size:16px"><b>Apuração dos critérios: ${placar.ok} de 4</b></p>
     ${numero ? `<p><b>Número WhatsApp:</b> ${numero}</p>` : ''}

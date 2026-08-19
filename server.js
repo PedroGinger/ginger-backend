@@ -4112,16 +4112,25 @@ app.get('/reprocessar', async (req, res) => {
     // da Receita, que e justamente o que ela usa para decidir. Se a celula da
     // planilha tem o dado e o bloco nao, o dado da planilha entra. Nunca o
     // contrario: o que o modelo extraiu da conversa tem precedencia.
-    const rowIndexAlvo = await buscarLinhaPorIdCanal(alvo) || await buscarLinhaPorTelefone(alvo);
-    if (rowIndexAlvo) {
-      try {
-        const sheets = await getSheetsClient();
-        if (sheets) {
-          const rl = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A${rowIndexAlvo}:O${rowIndexAlvo}`
-          });
-          const linha = (rl.data.values || [])[0] || [];
-          const daPlanilha = { nome: linha[1], email: linha[2], empresa: linha[4], cnpj: linha[7] };
+    // Uma leitura da planilha, nao tres. A primeira versao disto usava
+    // buscarLinhaPorIdCanal, buscarLinhaPorTelefone e depois lia a linha, e cada
+    // uma dessas funcoes varre a aba inteira. Somado a leitura da aba Conversas
+    // e a chamada do modelo, a rota passou a estourar o tempo de espera do
+    // navegador. Aqui a aba e lida uma vez e a linha e achada em memoria.
+    try {
+      const sheets = await getSheetsClient();
+      if (sheets) {
+        const rl = await sheets.spreadsheets.values.get({
+          spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A:O`
+        });
+        const linhas = rl.data.values || [];
+        let achada = null;
+        for (let i = 1; i < linhas.length; i++) {
+          const l = linhas[i] || [];
+          if (chaveConversa(l[14] || '') === alvo || chaveConversa(l[3] || '') === alvo) { achada = l; break; }
+        }
+        if (achada) {
+          const daPlanilha = { nome: achada[1], email: achada[2], empresa: achada[4], cnpj: achada[7] };
           const vazio = v => !(v && String(v).trim() && String(v).trim() !== '-');
           for (const campo of ['nome', 'email', 'empresa', 'cnpj']) {
             if (vazio(parsed[campo]) && !vazio(daPlanilha[campo])) {
@@ -4130,9 +4139,9 @@ app.get('/reprocessar', async (req, res) => {
             }
           }
         }
-      } catch(e) {
-        console.log('Não foi possível ler a linha para completar o bloco:', e.message);
       }
+    } catch(e) {
+      console.log('Não foi possível ler a linha para completar o bloco:', e.message);
     }
     if (forcar) {
       const antes = classificacaoNormalizada(parsed) || 'sem classificação';

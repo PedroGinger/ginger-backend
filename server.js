@@ -522,11 +522,11 @@ Sinais de NAO_LEAD, qualquer um basta:
 - É cliente ativo com problema de pedido JÁ COMPRADO: prazo de entrega, nota, amostra enviada, transporte, defeito, troca
 - É imprensa, estudante, pesquisa acadêmica ou concorrente
 ⚠️ A EXCEÇÃO MAIS IMPORTANTE DA REGRA ZERO: QUEM COBRA O RETORNO PROMETIDO É LEAD ⚠️
-Esta exceção existe porque o erro já aconteceu com uma lead real. Em 12/08 a Lívia, do Ateliê Lila Leon, entregou o briefing inteiro e ouviu que uma especialista entraria em contato. Em 18/08 ela voltou e perguntou "quanto tempo para o consultor entrar em contato? Já faz muito tempo". O agente leu aquilo como acompanhamento de contato existente, classificou como NAO_LEAD e mandou ela escrever para contato@ginger.ind.br. Uma pessoa que queria comprar, que já tinha dado tudo, e que teve que vir atrás, foi tratada como assunto administrativo e despachada para um e-mail.
+Esta exceção existe porque o erro já aconteceu com uma lead real. Em 12/08 a Lívia, do Ateliê Lila Leon, entregou o briefing inteiro e ouviu que uma especialista entraria em contato. Em 18/08 ela voltou e perguntou "quanto tempo para o consultor entrar em contato? Já faz muito tempo". O agente leu aquilo como acompanhamento de contato existente, classificou como NAO_LEAD e mandou ela escrever para contato@ginger.ind.br, um endereço que nem existe. Uma pessoa que queria comprar, que já tinha dado tudo, e que teve que vir atrás, foi tratada como assunto administrativo e despachada para um e-mail.
 Cobrar um retorno que a Ginger prometeu, perguntar o prazo da especialista, pedir status do orçamento, da amostra em desenvolvimento ou do projeto que ainda não começou NÃO é pós-venda. É a pessoa mais interessada que existe. Ela é LEAD, e é o contato mais quente do dia.
 "Pós-venda" é só quando já houve VENDA: pedido faturado, produto entregue, amostra recebida, nota emitida. Se não houve compra, não existe pós-venda, existe uma venda que não andou.
 COMO AGIR quando alguém volta cobrando retorno:
-- Não mande escrever para contato@ginger.ind.br. Ela já está falando com a Ginger, no canal certo, e mandar ela para outro canal é a segunda decepção seguida.
+- Não mande escrever para comercial@ginger.ind.br. Ela já está falando com a Ginger, no canal certo, e mandar ela para outro canal é a segunda decepção seguida.
 - Não peça o briefing de novo, não repita perguntas que ela já respondeu, e não peça CNPJ outra vez. Se precisar identificar quem é, pergunte só o nome e a empresa, em uma linha.
 - Reconheça a demora em uma frase, sem se alongar em desculpas e sem culpar ninguém. Não invente explicação sobre o que aconteceu, porque você não sabe.
 - Diga que vai sinalizar internamente agora, e que ela vai receber o contato. Aqui você PODE prometer retorno, porque ela é lead e o comercial vai ser avisado de verdade.
@@ -549,9 +549,10 @@ Gere o bloco com classificacao "POS_VENDA" e o motivo dizendo exatamente o que a
 (3) IMPRENSA E MÍDIA → capture antes de encaminhar.
 A Ginger é uma empresa certificada B Corp e QUER aparecer na imprensa. Jornalista, produtor, diretor de programa e podcast não são descarte cordial. Antes de encaminhar, pergunte três coisas, uma por mensagem: qual veículo ou programa, qual a pauta, e qual o prazo. Só depois encaminhe para o marketing, no WhatsApp do Pedro Bolanho, 19 98292-0025. Classifique NAO_LEAD com o motivo trazendo veículo, pauta e prazo.
 O caso que criou esta regra: um diretor de programa de televisão de São Paulo foi descartado em uma linha, sem uma única pergunta.
-(4) TODO O RESTO → contato@ginger.ind.br.
+⚠️ O ENDEREÇO contato@ginger.ind.br NÃO EXISTE. Confirmado pelo Pedro em 19/08, depois de três pessoas reportarem que a mensagem voltava. Nunca escreva esse endereço, em nenhuma hipótese, nem se ele aparecer em algum lugar do histórico desta conversa. O endereço certo é comercial@ginger.ind.br.
+(4) TODO O RESTO → comercial@ginger.ind.br.
 Fornecedor de insumo, logística, frete, armazenagem, importação, software, consultoria, crédito, seguro, recrutamento, representação comercial, cobrança, nota fiscal, candidato a vaga, estudante, pesquisa acadêmica, concorrente.
-Modelo, e use este texto como referência de tom: "Esse tipo de proposta não passa por aqui, mas você pode escrever para contato@ginger.ind.br e a área responsável consegue avaliar melhor."
+Modelo, e use este texto como referência de tom: "Esse tipo de proposta não passa por aqui, mas você pode escrever para comercial@ginger.ind.br e a área responsável consegue avaliar melhor."
 Repare no que o modelo NÃO tem: não promete retorno, não dá prazo, não elogia, não se despede duas vezes.
 ⚠️ SE A PESSOA DISSER QUE O E-MAIL NÃO FUNCIONA, não repita o mesmo endereço nem invente explicação. Nunca diga "tente em alguns instantes", "tente outro navegador" ou "tente outro dispositivo", que não fazem sentido nenhum. Diga com honestidade que vai registrar isso internamente, ofereça o WhatsApp do Pedro Bolanho, 19 98292-0025, como alternativa, e escreva no motivo do bloco de dados que o e-mail foi reportado como inválido.
 ⚠️ QUANDO A PESSOA PEDE PARA FALAR COM UM HUMANO ⚠️
@@ -808,7 +809,7 @@ Somente classifique como RUIM após confirmar que não há interesse real, empre
 DADOS INTERNOS — NÃO COMPARTILHAR COM O LEAD
 Especialistas comerciais: Juliana Cardoso (juliana.cardoso@ginger.ind.br) e Jennifer Santos (jennifer.santos@ginger.ind.br)
 Email remetente do sistema: lead@ginger.ind.br
-Canal para assuntos que não são de venda: contato@ginger.ind.br
+Canal para assuntos que não são de venda: comercial@ginger.ind.br
 ⚠️ QUANDO GERAR O BLOCO DE DADOS — REGRA CRÍTICA ⚠️
 NÃO gere o bloco %%%LEAD_DATA%%% apenas porque tem nome, empresa e contato. O bloco só deve ser gerado quando a conversa chegou a um ponto de CONCLUSÃO, ou seja:
 - Para BOM: você já coletou informações suficientes, já entendeu o projeto, já confirmou os quatro critérios, já pediu CNPJ e contato, e está pronto para encerrar e acionar o comercial.
@@ -1647,6 +1648,156 @@ async function chamarInstagram(caminho, opts) {
   const data = await r.json();
   return { ok: r.ok && !data.error, status: r.status, data };
 }
+// ══════════════════════════════════════════════════════════════
+// ── GANCHO DE COMENTÁRIO: "COMENTE X E EU TE CHAMO"
+// ══════════════════════════════════════════════════════════════
+// Pedido do Pedro em 19/08. A permissao de comentarios da Meta foi concedida na
+// sessao 23 e o codigo nunca foi escrito.
+//
+// A mecanica: o post convida a comentar uma palavra, e quem comenta recebe
+// direct. Isso funciona porque a Meta permite UMA resposta privada por
+// comentario, mesmo para quem nunca falou com a conta, dentro de 7 dias. E a
+// unica forma de iniciar conversa no Instagram sem a pessoa escrever primeiro.
+//
+// A campanha e por POST, nao global: a mesma palavra em posts diferentes leva a
+// mensagens diferentes, e palavra em post antigo nao dispara nada. Decisao do
+// Pedro, e a certa: gancho generico manda a pessoa para uma conversa que nao tem
+// a ver com o que ela estava vendo.
+function normalizarParaBusca(texto) {
+  return String(texto || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+// Palavra inteira, nao pedaco. "quero" nao casa dentro de "querosene", e o
+// acento e o emoji do comentario nao impedem o casamento.
+function comentarioCasaPalavra(texto, palavras) {
+  const limpo = ' ' + normalizarParaBusca(texto) + ' ';
+  for (const p of palavras || []) {
+    const alvo = normalizarParaBusca(p);
+    if (!alvo) continue;
+    if (limpo.includes(' ' + alvo + ' ')) return alvo;
+  }
+  return null;
+}
+async function salvarCampanha(mediaId, dados) {
+  await redis('SET', `campanha:${mediaId}`, JSON.stringify(dados));
+  await redis('SADD', 'campanhas:index', mediaId);
+}
+async function lerCampanha(mediaId) {
+  const bruto = await redis('GET', `campanha:${mediaId}`);
+  if (!bruto) return null;
+  try { return JSON.parse(bruto); } catch(e) { return null; }
+}
+async function listarCampanhas() {
+  const ids = await redis('SMEMBERS', 'campanhas:index');
+  if (!Array.isArray(ids)) return [];
+  const saida = [];
+  for (const id of ids) {
+    const c = await lerCampanha(id);
+    if (c) saida.push({ mediaId: id, ...c });
+    else await redis('SREM', 'campanhas:index', id);
+  }
+  return saida;
+}
+// O Pedro tem o LINK do post, nao o identificador interno. O webhook entrega o
+// identificador. Esta funcao faz a ponte: pega o codigo do link e procura entre
+// as midias da conta.
+async function resolverPostPorLink(link) {
+  const m = String(link || '').match(/instagram\.com\/(?:p|reel|tv)\/([A-Za-z0-9_-]+)/);
+  if (!m) return { erro: 'não reconheci o link do post. Use o endereço completo, como https://www.instagram.com/p/ABC123/' };
+  const codigo = m[1];
+  const r = await chamarInstagram(`/${IG_USER_ID}/media?fields=id,permalink,caption&limit=100`);
+  if (!r.ok) return { erro: 'não consegui listar os posts da conta', detalhe: r.data };
+  const achado = (r.data.data || []).find(x => String(x.permalink || '').includes('/' + codigo));
+  if (!achado) {
+    return { erro: `não achei esse post entre os 100 mais recentes da conta (código ${codigo})` };
+  }
+  return { mediaId: achado.id, permalink: achado.permalink, legenda: String(achado.caption || '').substring(0, 200) };
+}
+// Resposta privada a um comentario. O destinatario e o comentario, nao a pessoa,
+// e e isso que dispensa a janela de 24 horas.
+async function responderComentarioNoDireto(comentarioId, texto) {
+  return await chamarInstagram(`/${IG_USER_ID}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ recipient: { comment_id: comentarioId }, message: { text: texto } })
+  });
+}
+// Resposta publica embaixo do comentario. Serve para avisar a pessoa de olhar o
+// pedido de mensagem, que senao fica esquecido em quem nao segue a conta.
+async function responderComentarioEmPublico(comentarioId, texto) {
+  return await chamarInstagram(`/${comentarioId}/replies`, {
+    method: 'POST',
+    body: JSON.stringify({ message: texto })
+  });
+}
+async function tratarComentarioInstagram(valor) {
+  const comentarioId = valor && valor.id;
+  const texto = (valor && valor.text) || '';
+  const autor = (valor && valor.from) || {};
+  const mediaId = valor && valor.media && valor.media.id;
+  if (!comentarioId || !mediaId) return;
+  // A conta recebe webhook dos proprios comentarios, inclusive das respostas que
+  // o bot acabou de publicar. Sem esta trava ele conversa consigo mesmo.
+  if (autor.id && IG_USER_ID && String(autor.id) === String(IG_USER_ID)) return;
+  if (await jaProcessouMensagem(`cmt:${comentarioId}`)) {
+    console.log('Comentário já tratado, ignorando:', comentarioId);
+    return;
+  }
+  const campanha = await lerCampanha(mediaId);
+  if (!campanha) return;
+  const palavra = comentarioCasaPalavra(texto, campanha.palavras);
+  if (!palavra) return;
+  if (!autor.id) {
+    console.log(`Comentário com a palavra "${palavra}" mas sem autor identificável, não dá para chamar no direto`);
+    return;
+  }
+  // Uma pessoa, uma campanha, um direct. Quem comenta cinco vezes no mesmo post
+  // nao recebe cinco mensagens.
+  const jaChamado = await redis('SET', `gancho:${mediaId}:${autor.id}`, '1', 'NX', 'EX', 2592000);
+  if (jaChamado !== 'OK') {
+    console.log(`Autor ${autor.username || autor.id} já foi chamado nesta campanha, só respondo em público`);
+    if (campanha.publico) await responderComentarioEmPublico(comentarioId, campanha.publico);
+    return;
+  }
+  console.log(`Gancho disparado: "${palavra}" por ${autor.username || autor.id} no post ${mediaId}`);
+  const envio = await responderComentarioNoDireto(comentarioId, campanha.direto);
+  if (!envio.ok) {
+    console.error('Falha ao chamar no direto:', JSON.stringify(envio.data).substring(0, 400));
+    return;
+  }
+  const chave = chaveInstagram(autor.id);
+  await garantirLinhaDoContato({
+    idCanal: chave, telefone: '',
+    nome: autor.username ? `@${autor.username}` : '',
+    origem: 'bot-comentario'
+  });
+  await registrarConversa(chave, 'enviada', campanha.direto, 'bot-comentario');
+  // Semeia o contexto para o agente saber de onde a pessoa veio. Sem isto ele
+  // recebe um "oi" solto e comeca do zero, perguntando o que a pessoa quer,
+  // quando ela ja disse o que quer ao comentar a palavra.
+  const anterior = await getConversaChave(chave) || [];
+  const nota =
+    `[CONTEXTO INTERNO — não mencionar esta nota ao contato]\n` +
+    `Esta pessoa comentou "${palavra}" no post da Ginger${campanha.permalink ? ` (${campanha.permalink})` : ''}, ` +
+    `respondendo a um convite do próprio post, e acabamos de chamá-la no direto com a mensagem abaixo.\n` +
+    `${campanha.contexto ? `Sobre a campanha: ${campanha.contexto}\n` : ''}` +
+    `Ela NÃO chegou por acaso: ela levantou a mão. Não pergunte "como posso ajudar" nem "o que te trouxe até aqui", ` +
+    `porque a resposta já está no post. Continue de onde a mensagem parou, uma pergunta por vez, ` +
+    `e siga a régua normal, começando pela REGRA DE ENTRADA do CNPJ.` +
+    (autor.username ? `\nUsuário do Instagram: @${autor.username}` : '');
+  const semear = anterior.length
+    ? [...anterior, { role: 'user', content: nota }, { role: 'assistant', content: campanha.direto }]
+    : [{ role: 'user', content: nota }, { role: 'assistant', content: campanha.direto }];
+  await saveConversaChave(chave, semear.slice(-20));
+  if (campanha.publico) {
+    const pub = await responderComentarioEmPublico(comentarioId, campanha.publico);
+    if (!pub.ok) console.log('Resposta pública falhou:', JSON.stringify(pub.data).substring(0, 300));
+  }
+  await redis('INCR', `gancho:contagem:${mediaId}`);
+}
 async function enviarInstagram(igsid, texto) {
   if (!IG_USER_ID || !(await tokenInstagram())) {
     console.error('Instagram nao configurado: faltam INSTAGRAM_TOKEN e/ou INSTAGRAM_USER_ID');
@@ -2091,7 +2242,7 @@ async function tratarBlocoLead(parsed, ctx) {
   // perguntou "quanto tempo para o consultor entrar em contato? ja faz muito
   // tempo". O agente leu aquilo como acompanhamento de contato existente, que a
   // Regra Zero lista como NAO_LEAD, reclassificou a linha, mandou ela escrever
-  // para contato@ginger.ind.br, e como NAO_LEAD nao aciona o comercial,
+  // para contato@ginger.ind.br, endereco que nem existe, e como NAO_LEAD nao
   // ninguem soube que uma lead estava cobrando o retorno que a Ginger prometeu.
   // Uma classificacao ja estabelecida nao pode ser destruida assim. Lead que
   // volta cobrando retorno e o contato mais quente que existe, nao o mais frio.
@@ -2463,6 +2614,15 @@ app.post('/instagram', async (req, res) => {
   console.log('WEBHOOK INSTAGRAM:', JSON.stringify(req.body).substring(0, 700));
   res.status(200).json({ ok: true });
   try {
+    // Comentario e mensagem chegam no MESMO webhook, em formatos diferentes:
+    // mensagem vem em entry[0].messaging, comentario vem em entry[0].changes com
+    // field "comments". Sem esta bifurcacao o evento de comentario cai no
+    // eventoDeMensagem, devolve null e desaparece em silencio.
+    const mudanca = req.body?.entry?.[0]?.changes?.[0];
+    if (mudanca && mudanca.field === 'comments') {
+      await tratarComentarioInstagram(mudanca.value);
+      return;
+    }
     const ev = eventoDeMensagem(req.body, IG_USER_ID);
     if (!ev) return;
     if (await jaProcessouMensagem(ev.mid)) {
@@ -2627,6 +2787,103 @@ app.get('/facebook-test', async (req, res) => {
 });
 // ── ROTA: SITUAÇÃO E RENOVAÇÃO DO TOKEN DO INSTAGRAM (protegida)
 // Com ?renovar=1 força a renovação na hora, sem esperar a rotina diária.
+// ══════════════════════════════════════════════════════════════
+// ── ROTAS: CAMPANHAS DE GANCHO NO COMENTÁRIO
+// ══════════════════════════════════════════════════════════════
+// /gancho-criar   cadastra a campanha de um post
+// /ganchos        lista o que está no ar, com quantos disparos cada um teve
+// /gancho-remover desliga a campanha de um post
+//
+// Exemplo de cadastro, tudo em uma linha do navegador:
+// /gancho-criar?chave=SUACHAVE&link=https://www.instagram.com/p/ABC123/
+//   &palavras=quero,eu quero,me chama
+//   &direto=Oi! Vi seu comentário no post...
+//   &publico=Te chamei no direto!
+//   &contexto=Post sobre fragrância para sabonete, o convite era falar com a gente
+//   &aplicar=1
+app.get('/gancho-criar', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const link = (req.query.link || '').trim();
+  const postDireto = (req.query.post || '').trim();
+  const palavras = (req.query.palavras || '').split(',').map(p => p.trim()).filter(Boolean);
+  const direto = (req.query.direto || '').trim();
+  const publico = (req.query.publico || '').trim();
+  const contexto = (req.query.contexto || '').trim();
+  const aplicar = req.query.aplicar === '1';
+  const faltando = [];
+  if (!link && !postDireto) faltando.push('link (o endereço do post) ou post (o id da mídia)');
+  if (!palavras.length) faltando.push('palavras (separadas por vírgula)');
+  if (!direto) faltando.push('direto (a mensagem que a pessoa recebe no direct)');
+  if (faltando.length) {
+    return res.status(400).json({
+      erro: 'faltam parâmetros', faltando,
+      exemplo: '/gancho-criar?chave=...&link=https://www.instagram.com/p/ABC123/&palavras=quero,eu quero&direto=Oi! Vi seu comentário...&publico=Te chamei no direto!&contexto=post sobre X&aplicar=1'
+    });
+  }
+  try {
+    let mediaId = postDireto, permalink = '', legenda = '';
+    if (!mediaId) {
+      const achado = await resolverPostPorLink(link);
+      if (achado.erro) return res.status(404).json(achado);
+      mediaId = achado.mediaId; permalink = achado.permalink; legenda = achado.legenda;
+    }
+    const campanha = {
+      palavras, direto, publico, contexto, permalink,
+      criadaEm: agoraBrasil()
+    };
+    const jaExiste = await lerCampanha(mediaId);
+    if (!aplicar) {
+      return res.json({
+        modo: 'PRÉVIA, nada foi salvo',
+        post: { mediaId, permalink, legenda },
+        jaExistiaCampanhaNessePost: !!jaExiste,
+        campanhaQueSeriaSalva: campanha,
+        palavrasComoSerãoComparadas: palavras.map(p => normalizarParaBusca(p)),
+        oQueAcontece: 'Quem comentar uma dessas palavras NESTE post recebe a mensagem de "direto" no direct, e a resposta de "publico" embaixo do comentário. Uma pessoa recebe uma vez só por campanha.',
+        comoAplicar: 'acrescente &aplicar=1 no endereço'
+      });
+    }
+    await salvarCampanha(mediaId, campanha);
+    console.log(`Gancho cadastrado no post ${mediaId}: ${palavras.join(', ')}`);
+    res.json({ modo: 'SALVO', post: { mediaId, permalink }, campanha, substituiu: !!jaExiste });
+  } catch(e) {
+    console.error('Erro ao cadastrar gancho:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+app.get('/ganchos', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  try {
+    const lista = await listarCampanhas();
+    const comContagem = [];
+    for (const c of lista) {
+      const n = await redis('GET', `gancho:contagem:${c.mediaId}`);
+      comContagem.push({ ...c, pessoasChamadas: parseInt(n || '0', 10) });
+    }
+    res.json({
+      total: comContagem.length,
+      campanhas: comContagem,
+      comoRemover: '/gancho-remover?chave=...&post=<mediaId>&aplicar=1'
+    });
+  } catch(e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+app.get('/gancho-remover', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const mediaId = (req.query.post || '').trim();
+  const aplicar = req.query.aplicar === '1';
+  if (!mediaId) return res.status(400).json({ erro: 'informe &post=<mediaId>, veja em /ganchos' });
+  const c = await lerCampanha(mediaId);
+  if (!c) return res.status(404).json({ erro: 'não existe campanha nesse post', post: mediaId });
+  if (!aplicar) {
+    return res.json({ modo: 'PRÉVIA', campanhaQueSeriaRemovida: { mediaId, ...c }, comoAplicar: 'acrescente &aplicar=1' });
+  }
+  await redis('DEL', `campanha:${mediaId}`);
+  await redis('SREM', 'campanhas:index', mediaId);
+  console.log(`Gancho removido do post ${mediaId}`);
+  res.json({ modo: 'REMOVIDO', post: mediaId });
+});
 app.get('/instagram-status', async (req, res) => {
   if (!exigeChave(req, res)) return;
   await tokenInstagram();

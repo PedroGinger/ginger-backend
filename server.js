@@ -4105,6 +4105,35 @@ app.get('/reprocessar', async (req, res) => {
         && !alvo.startsWith('site-')) {
       parsed.telefone = alvo;
     }
+    // ── O QUE A PLANILHA JA SABE E O MODELO NAO VIU
+    // No reprocessamento o modelo le so a conversa, e conversa nem sempre tem
+    // tudo: a Livia informou o CNPJ pelo formulario do site, nao pelo WhatsApp,
+    // entao o bloco vinha sem CNPJ e o cartao chegava na Juliana sem a consulta
+    // da Receita, que e justamente o que ela usa para decidir. Se a celula da
+    // planilha tem o dado e o bloco nao, o dado da planilha entra. Nunca o
+    // contrario: o que o modelo extraiu da conversa tem precedencia.
+    const rowIndexAlvo = await buscarLinhaPorIdCanal(alvo) || await buscarLinhaPorTelefone(alvo);
+    if (rowIndexAlvo) {
+      try {
+        const sheets = await getSheetsClient();
+        if (sheets) {
+          const rl = await sheets.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A${rowIndexAlvo}:O${rowIndexAlvo}`
+          });
+          const linha = (rl.data.values || [])[0] || [];
+          const daPlanilha = { nome: linha[1], email: linha[2], empresa: linha[4], cnpj: linha[7] };
+          const vazio = v => !(v && String(v).trim() && String(v).trim() !== '-');
+          for (const campo of ['nome', 'email', 'empresa', 'cnpj']) {
+            if (vazio(parsed[campo]) && !vazio(daPlanilha[campo])) {
+              parsed[campo] = String(daPlanilha[campo]).trim();
+              console.log(`Reprocessamento de ${alvo}: ${campo} veio da planilha, o bloco não tinha`);
+            }
+          }
+        }
+      } catch(e) {
+        console.log('Não foi possível ler a linha para completar o bloco:', e.message);
+      }
+    }
     if (forcar) {
       const antes = classificacaoNormalizada(parsed) || 'sem classificação';
       parsed.classificacao = forcar;

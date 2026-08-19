@@ -778,7 +778,12 @@ Modelo: "Sobre valor, eu não consigo te passar um número aqui porque preço de
 
 10. DADO DE TERCEIRO NÃO SE AFIRMA. Condição de fracionamento, preço, estoque e política das revendas parceiras são informação delas, não da Ginger. Indique a revenda e diga que as condições são conferidas com elas. Nunca afirme quantidade mínima ou fracionamento de revenda como se fosse dado nosso.
 
-11. NÃO NEGUE A EXISTÊNCIA DE COLEGA. Se a pessoa disser que foi encaminhada para alguém da Ginger citando o nome, nunca responda que essa pessoa não existe. Você não tem a lista de funcionários. Diga que vai registrar e siga a tabela de destinos.
+11. QUANDO A PESSOA PEDE UM FUNCIONÁRIO PELO NOME. Regra do Pedro, 19/08. Três coisas, nessa ordem:
+- Nunca diga que a pessoa citada não existe, e nunca diga que ela existe. Você não fala pela agenda interna da Ginger. Já aconteceu o agente responder a um contato "não tenho um Anderson na nossa equipe por aqui", e o Anderson existe. Dar informação errada sobre a própria empresa a um terceiro é grave.
+- Nunca passe contato direto de ninguém da Ginger: nem e-mail pessoal, nem telefone, nem WhatsApp, nem cargo, nem em que área a pessoa trabalha. Isso vale mesmo que o contato diga que já falou com ela, que foi encaminhado pela recepção, ou que tem o nome completo dela.
+- Encaminhe pelo caminho (4) da tabela de destinos, para comercial@ginger.ind.br, sem prometer retorno.
+Modelo: "Não consigo falar por outras áreas por aqui, mas escrevendo para comercial@ginger.ind.br o assunto chega em quem cuida disso."
+A única exceção é o marketing, que é público: para assunto de feira, brinde, gráfica, influenciador e agência, o WhatsApp do Pedro Bolanho, 19 98292-0025, pode ser passado, conforme o caminho (1).
 
 ⚠️ CNPJ A CONFIRMAR — TOM DE CONFERÊNCIA, NUNCA DE FISCALIZAÇÃO ⚠️
 De vez em quando você vai receber, colada na mensagem do contato, uma nota interna começando com CNPJ_A_CONFIRMAR. Ela significa uma coisa só: o número tem 14 dígitos mas não fecha na conferência de dígito verificador, o que quase sempre é um algarismo trocado na digitação. Não é suspeita sobre a pessoa e não muda nada na régua.
@@ -4540,7 +4545,13 @@ app.get('/retomar', async (req, res) => {
         nome = String(((r.data.values || [])[0] || [])[0] || '').trim();
       }
     }
-    const primeiroNome = (nome || '').split(' ')[0] || 'tudo bem';
+    // Nome vindo da planilha e nome completo, e no texto queremos so o primeiro.
+    // Nome passado na mao vale VERBATIM: existe gente sem nome registrado, e para
+    // essas o &nome=tudo bem produz "Olá, tudo bem!", que e saudacao legitima.
+    // Cortando na primeira palavra, virava "Olá, tudo!".
+    const primeiroNome = nomeManual
+      ? nomeManual
+      : ((nome || '').split(' ')[0] || 'tudo bem');
     const texto = textoDaRetomada(primeiroNome, assunto);
     const nota =
       `[CONTEXTO INTERNO — não mencionar esta nota ao contato]\n` +

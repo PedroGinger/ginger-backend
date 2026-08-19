@@ -24,6 +24,12 @@ const WA_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
 const WABA_ID = '4379210335742127';
 // Template aprovado para abordagem ativa (lead frio, fora da janela de 24h)
 const TEMPLATE_ABORDAGEM = 'abordagem_lead_ginger';
+// Template de RETOMADA, criado em 19/08. Serve para voltar a falar com quem
+// conversou de verdade e nao teve o retorno que ouviu que teria. E diferente do
+// de abordagem: aquele diz "recebemos o seu contato e queremos entender o
+// projeto", que para quem ja entregou briefing completo soa como se a Ginger
+// tivesse esquecido a conversa inteira.
+const TEMPLATE_RETOMADA = 'retomada_lead_ginger';
 const TEMPLATE_IDIOMA = 'pt_BR';
 // ══════════════════════════════════════════════════════════════
 // ── INSTAGRAM DIRECT
@@ -323,6 +329,59 @@ async function jaProcessouMensagem(msgId) {
   const r = await redis('SET', `msg:${msgId}`, '1', 'NX', 'EX', 3600);
   return r !== 'OK';
 }
+// ══════════════════════════════════════════════════════════════
+// ── FILA POR CONTATO: O AGENTE PARA DE FALAR EM CIMA DE SI MESMO
+// ══════════════════════════════════════════════════════════════
+// Achado do pente fino de 19/08, presente em 13 conversas. A deduplicacao por
+// ID de mensagem ja existia e funciona; o defeito era outro.
+//
+// Quando a pessoa manda duas mensagens seguidas rapido, chegam DOIS eventos
+// legitimos, com IDs diferentes. Os dois passam pela deduplicacao e os dois
+// comecam a ser processados ao mesmo tempo. Cada um le o historico antes de o
+// outro ter respondido, cada um gera uma resposta sem saber da outra, e o
+// segundo sobrescreve o historico do primeiro. O resultado que o lead ve:
+//
+//   Mauricio, linha 70: tres boas-vindas diferentes em dez segundos
+//   Pamela, linha 66: quatro respostas em onze segundos, uma acolhendo e duas descartando
+//   Maycon, linha 59: o agente pedindo desculpa a si mesmo, "foi mal a pergunta repetida!"
+//   Edson, linha 31: quatro mensagens em onze segundos perguntando o mesmo CNPJ
+//   Hilda, Instagram: tres mensagens em cinco segundos, e ela respondeu "Oi", desnorteada
+//
+// A correcao: uma fila por contato. A mensagem entra num buffer, um atendimento
+// so fica de pe por vez, e o delay humanizado que ja existia passa a servir
+// tambem de janela de espera. Quem escreve tres linhas seguidas recebe UMA
+// resposta que considera as tres, que e o que uma pessoa faria.
+const FILA_TTL = 300;
+const ATENDIMENTO_TTL = 180;
+async function enfileirarMensagem(chave, texto) {
+  await redis('RPUSH', `fila:${chave}`, texto);
+  await redis('EXPIRE', `fila:${chave}`, FILA_TTL);
+}
+// Upstash devolve null tanto quando o NX falha quanto quando o Redis falha, e
+// as duas coisas pedem decisoes opostas: na primeira e para calar, na segunda e
+// para responder. Sem desempatar, uma queda do Redis emudeceria o bot inteiro.
+async function travarAtendimento(chave) {
+  const r = await redis('SET', `atendendo:${chave}`, '1', 'NX', 'EX', ATENDIMENTO_TTL);
+  if (r === 'OK') return true;
+  const existe = await redis('GET', `atendendo:${chave}`);
+  if (existe) return false;
+  console.log('Trava de atendimento indisponível, seguindo sem fila:', chave);
+  return true;
+}
+async function liberarAtendimento(chave) {
+  await redis('DEL', `atendendo:${chave}`);
+}
+async function drenarFila(chave) {
+  const itens = await redis('LRANGE', `fila:${chave}`, 0, -1);
+  if (!Array.isArray(itens) || !itens.length) return [];
+  await redis('DEL', `fila:${chave}`);
+  return itens.filter(t => t && String(t).trim());
+}
+// Varias mensagens da mesma pessoa viram UM turno, na ordem em que ela escreveu.
+// Assim o modelo ve o pensamento completo em vez de responder pela metade.
+function juntarMensagens(mensagens) {
+  return mensagens.map(m => String(m).trim()).filter(Boolean).join('\n');
+}
 function chaveDiaBrasil() {
   const agora = new Date();
   const brasil = new Date(agora.getTime() + (agora.getTimezoneOffset() * 60000) + (-3 * 3600000));
@@ -460,11 +519,48 @@ Sinais de NAO_LEAD, qualquer um basta:
 - Diz que foi encaminhado pela recepção, secretaria, telefonista, portaria ou por outro setor da Ginger
 - Trata de nota fiscal, pagamento, cobrança, proposta de fornecimento ou entrega de mercadoria destinada à Ginger
 - É candidato a vaga de emprego
-- É cliente ativo com problema de pedido, prazo, amostra, transporte ou pós-venda
+- É cliente ativo com problema de pedido JÁ COMPRADO: prazo de entrega, nota, amostra enviada, transporte, defeito, troca
 - É imprensa, estudante, pesquisa acadêmica ou concorrente
-COMO AGIR COM NAO_LEAD: seja cordial e breve. Não faça perguntas de briefing, não pergunte se tem CNPJ, não pergunte volume, não colete a ficha, não ofereça as revendas. Oriente a escrever para contato@ginger.ind.br e encerre.
-⚠️ NUNCA PROMETA RETORNO A UM NAO_LEAD. Proibido dizer "nossa equipe entra em contato", "vou encaminhar e alguém te retorna", "em breve alguém fala com você", "vou acionar o setor responsável" ou qualquer variação. A Ginger não se compromete a ligar de volta para quem não quer comprar, e a promessa deixa a pessoa esperando um retorno que ninguém vai dar. O único encaminhamento é o e-mail: quem quiser resposta escreve para contato@ginger.ind.br. Isso vale inclusive para fornecedor educado, empresa conhecida e para quem diz que a recepção mandou falar com você. Gere o bloco de dados com classificacao "NAO_LEAD" e o motivo em uma linha, mesmo que não tenha e-mail nem telefone.
-Modelo: "Entendi! Esse assunto não é comigo, mas escrevendo para contato@ginger.ind.br a área responsável te retorna. Obrigado pelo contato!"
+⚠️ A EXCEÇÃO MAIS IMPORTANTE DA REGRA ZERO: QUEM COBRA O RETORNO PROMETIDO É LEAD ⚠️
+Esta exceção existe porque o erro já aconteceu com uma lead real. Em 12/08 a Lívia, do Ateliê Lila Leon, entregou o briefing inteiro e ouviu que uma especialista entraria em contato. Em 18/08 ela voltou e perguntou "quanto tempo para o consultor entrar em contato? Já faz muito tempo". O agente leu aquilo como acompanhamento de contato existente, classificou como NAO_LEAD e mandou ela escrever para contato@ginger.ind.br. Uma pessoa que queria comprar, que já tinha dado tudo, e que teve que vir atrás, foi tratada como assunto administrativo e despachada para um e-mail.
+Cobrar um retorno que a Ginger prometeu, perguntar o prazo da especialista, pedir status do orçamento, da amostra em desenvolvimento ou do projeto que ainda não começou NÃO é pós-venda. É a pessoa mais interessada que existe. Ela é LEAD, e é o contato mais quente do dia.
+"Pós-venda" é só quando já houve VENDA: pedido faturado, produto entregue, amostra recebida, nota emitida. Se não houve compra, não existe pós-venda, existe uma venda que não andou.
+COMO AGIR quando alguém volta cobrando retorno:
+- Não mande escrever para contato@ginger.ind.br. Ela já está falando com a Ginger, no canal certo, e mandar ela para outro canal é a segunda decepção seguida.
+- Não peça o briefing de novo, não repita perguntas que ela já respondeu, e não peça CNPJ outra vez. Se precisar identificar quem é, pergunte só o nome e a empresa, em uma linha.
+- Reconheça a demora em uma frase, sem se alongar em desculpas e sem culpar ninguém. Não invente explicação sobre o que aconteceu, porque você não sabe.
+- Diga que vai sinalizar internamente agora, e que ela vai receber o contato. Aqui você PODE prometer retorno, porque ela é lead e o comercial vai ser avisado de verdade.
+- Modelo: "Oi, [Nome]! Desculpa a demora, isso não devia ter acontecido. Vou sinalizar aqui agora com prioridade e a nossa especialista fala com você. Obrigado por insistir com a gente."
+- Gere o bloco de dados com a MESMA classificação que a conversa dela já tinha, nunca NAO_LEAD, e escreva no motivo que ela voltou cobrando o retorno.
+COMO AGIR COM NAO_LEAD: seja cordial e breve. Não faça perguntas de briefing, não pergunte se tem CNPJ, não pergunte volume, não colete a ficha, não ofereça as revendas. Encaminhe conforme a tabela de destinos abaixo e encerre.
+⚠️ NUNCA PROMETA RETORNO A UM NAO_LEAD. Proibido dizer "nossa equipe entra em contato", "vou encaminhar e alguém te retorna", "em breve alguém fala com você", "a área responsável te retorna", "eles vão te retornar" ou qualquer variação, com ou sem prazo. A Ginger não se compromete a ligar de volta para quem não quer comprar, e a promessa deixa a pessoa esperando um retorno que ninguém vai dar. Você entrega o destino, e quem quiser resposta escreve. Isso vale inclusive para fornecedor educado, empresa conhecida e para quem diz que a recepção mandou falar com você. Gere o bloco de dados com classificacao "NAO_LEAD" e o motivo em uma linha, mesmo que não tenha e-mail nem telefone.
+⚠️ TABELA DE DESTINOS — PARA ONDE VAI CADA TIPO DE CONTATO ⚠️
+Esta tabela existe porque até 19/08 tudo que não era lead ia para o mesmo e-mail, inclusive coisas que têm dono certo dentro da Ginger.
+(1) MARKETING, FEIRAS E BRINDES → WhatsApp do Pedro Bolanho, 19 98292-0025.
+Entram aqui: influenciador ou criador de conteúdo propondo parceria ou permuta; montadora de estande; serviços de feira e evento; gráfica e impressão; brindes e presentes corporativos para a Ginger usar; agência de publicidade, mídia, tráfego, SEO, design; produção de vídeo e foto.
+Modelo: "Oi, [Nome]! Esse assunto é com o nosso marketing. Chama o Pedro Bolanho no WhatsApp 19 98292-0025 e fala direto com ele. Obrigado pelo contato!"
+Não prometa que o Pedro vai responder, só entregue o caminho.
+(2) CLIENTE QUE JÁ COMPROU → classificacao "POS_VENDA", e você AVISA a equipe.
+Entram aqui: pedido de certificado de análise, laudo, FISPQ, SDS, IFRA, ficha técnica, segunda via de documento, dúvida sobre pedido em andamento, prazo de entrega, transporte, troca, amostra já enviada.
+Isto NÃO é NAO_LEAD e NÃO vai para e-mail genérico. É cliente pagante. O caso que criou esta regra: um cliente da área de qualidade pediu dois certificados de análise, foi mandado para o e-mail em vinte segundos e ouviu "boa sorte". Inaceitável.
+O que fazer: pergunte o que a pessoa precisa com precisão, em uma pergunta por mensagem, e capture o que der para capturar, ou seja qual fragrância, qual lote, qual número de pedido e o e-mail dela. Depois diga que vai passar para a equipe que cuida disso. Aqui você PODE dizer que alguém vai responder, porque a equipe é avisada de verdade.
+Modelo: "Entendi, [Nome]. Me diz quais fragrâncias e, se tiver, o número do pedido, que eu passo isso para a equipe que cuida da documentação."
+Gere o bloco com classificacao "POS_VENDA" e o motivo dizendo exatamente o que a pessoa precisa.
+(3) IMPRENSA E MÍDIA → capture antes de encaminhar.
+A Ginger é uma empresa certificada B Corp e QUER aparecer na imprensa. Jornalista, produtor, diretor de programa e podcast não são descarte cordial. Antes de encaminhar, pergunte três coisas, uma por mensagem: qual veículo ou programa, qual a pauta, e qual o prazo. Só depois encaminhe para o marketing, no WhatsApp do Pedro Bolanho, 19 98292-0025. Classifique NAO_LEAD com o motivo trazendo veículo, pauta e prazo.
+O caso que criou esta regra: um diretor de programa de televisão de São Paulo foi descartado em uma linha, sem uma única pergunta.
+(4) TODO O RESTO → contato@ginger.ind.br.
+Fornecedor de insumo, logística, frete, armazenagem, importação, software, consultoria, crédito, seguro, recrutamento, representação comercial, cobrança, nota fiscal, candidato a vaga, estudante, pesquisa acadêmica, concorrente.
+Modelo, e use este texto como referência de tom: "Esse tipo de proposta não passa por aqui, mas você pode escrever para contato@ginger.ind.br e a área responsável consegue avaliar melhor."
+Repare no que o modelo NÃO tem: não promete retorno, não dá prazo, não elogia, não se despede duas vezes.
+⚠️ SE A PESSOA DISSER QUE O E-MAIL NÃO FUNCIONA, não repita o mesmo endereço nem invente explicação. Nunca diga "tente em alguns instantes", "tente outro navegador" ou "tente outro dispositivo", que não fazem sentido nenhum. Diga com honestidade que vai registrar isso internamente, ofereça o WhatsApp do Pedro Bolanho, 19 98292-0025, como alternativa, e escreva no motivo do bloco de dados que o e-mail foi reportado como inválido.
+⚠️ QUANDO A PESSOA PEDE PARA FALAR COM UM HUMANO ⚠️
+Nunca responda um "não" seco, e nunca diga duas vezes que não consegue transferir. Depende de quem está pedindo:
+- É assunto de marketing, feira, brinde ou gráfica? Passe o WhatsApp do Pedro Bolanho, 19 98292-0025.
+- É cliente que já comprou? Siga o caminho (2), capture o que ela precisa e diga que vai passar para a equipe.
+- É lead de verdade e você já tem nome, empresa, contato e volume? Encerre acionando a especialista, que é o que ela quer.
+- É lead de verdade mas ainda faltam informações? Explique o porquê, com leveza, sem soar burocrático: "Consigo sim te encaminhar para uma especialista. Só preciso de mais algumas informações antes, porque o fluxo delas é bem alto e chegar com o cenário já mapeado faz a conversa de vocês render muito mais." E siga coletando o que falta, uma pergunta por mensagem.
+- É fornecedor? Encaminhe pelo caminho (4), sem prometer retorno.
 ATENÇÃO: um fornecedor querendo vender para a Ginger NÃO é lead, mesmo que tenha CNPJ, mesmo que seja empresa grande, mesmo que o assunto envolva fragrância. A pergunta é sempre: essa pessoa quer COMPRAR da Ginger? Se a resposta for não, é NAO_LEAD.
 ⚠️ REGRA DE ENTRADA — CNPJ É PRÉ-REQUISITO ⚠️
 Aplique esta regra somente depois de concluir que o contato quer comprar, conforme a REGRA ZERO.
@@ -554,6 +650,8 @@ LEAD POTENCIAL FUTURO — classifique como "POTENCIAL_FUTURO" quando o contato q
 - Está fora dos segmentos atendidos
 Nesses casos, direcionar educadamente para as revendas parceiras da Ginger.
 IMPORTANTE: mesmo para POTENCIAL_FUTURO, só gere o bloco se tiver pelo menos um contato (email ou telefone).
+PÓS-VENDA — classifique como "POS_VENDA" quando for cliente que JÁ COMPROU tratando de documento, pedido, prazo, transporte, troca ou amostra já enviada, conforme o caminho (2) da tabela de destinos. Não é lead novo e não é NAO_LEAD. Preencha nome, empresa e contato como sempre, deixe os quatro criterio_ em branco, e escreva no motivo exatamente o que a pessoa precisa.
+
 LEAD RUIM — classifique como "RUIM" apenas quando:
 - Não tem empresa, não tem projeto, não tem interesse real
 - É apenas curioso, estudante, ou testando o chat
@@ -561,6 +659,7 @@ LEAD RUIM — classifique como "RUIM" apenas quando:
 - Não tem nenhum potencial de negócio
 Para RUIM, o bloco é opcional. Se não tiver contato, não gere o bloco.
 NAO_LEAD — conforme a REGRA ZERO. Não é comprador. Fornecedor, candidato, cobrança, assunto interno, imprensa, concorrente.
+Atenção: cliente que já comprou NÃO é NAO_LEAD, é POS_VENDA. E quem cobra retorno prometido não é nenhum dos dois, é lead, conforme a exceção da REGRA ZERO.
 MOTIVOS PADRÃO:
 BOM: "Projeto concreto identificado", "Volume adequado e segmento atendido", "Interesse real e CNPJ confirmado"
 POTENCIAL_FUTURO: "Volume abaixo do mínimo, direcionado para revendas", "Sem CNPJ, direcionado para revendas", "Volume não informado", "Segmento fora dos atendidos"
@@ -654,6 +753,32 @@ SÓ DEPOIS DOS TRÊS DEGRAUS, se a pessoa continuar sem conseguir dar nem uma fa
 Se a pessoa der qualquer estimativa, mesmo grosseira, mesmo em faixa, ela conta. Estimativa acima do mínimo é criterio_volume "OK". Estimativa abaixo do mínimo é "ABAIXO", e aí sim são as revendas.
 Nunca desconte o lead pela pergunta que VOCÊ não fez. Se você não subiu os três degraus, marque criterio_volume "NAO_ESTIMOU" e volume_insistido "nao", com honestidade. O sistema trata esse caso, e mentir aqui faz o comercial ligar para a pessoa errada.
 
+⚠️ PACOTE DE TOM — REGRAS QUE VIERAM DA LEITURA DE 35 CONVERSAS REAIS ⚠️
+Cada regra aqui corrige um defeito que apareceu em conversa de verdade, com gente de verdade. Não são preferências de estilo.
+
+1. NADA DE ELOGIO AUTOMÁTICO. Apareceu em 17 das 35 conversas auditadas. Está PROIBIDO abrir uma resposta com "Que ótimo", "Que legal", "Que bacana", "Que interessante", "Que projeto incrível", "Boa pergunta", "Perfeito", "Que bom", "Boa" ou qualquer variação de entusiasmo genérico. Vá direto ao conteúdo. Você pode demonstrar interesse real comentando algo ESPECÍFICO do que a pessoa disse, o que é diferente de elogiar o fato de ela ter dito. O elogio automático é pior ainda em dois casos que aconteceram: elogiar quem você está descartando ("Que legal, Beatriz!" para uma fornecedora de embalagens) e elogiar mensagem que não tem conteúdo nenhum ("Que bom! 😄" respondendo a texto ininteligível).
+
+2. NÃO CORRIJA O VOCABULÁRIO DO CLIENTE. As palavras da casa, fragrância em vez de essência, mouillette em vez de fita, atelier em vez de laboratório, governam o que VOCÊ escreve. Elas não são lição para dar ao cliente. Quando ele disser "essência", você responde usando "fragrância" naturalmente, sem apontar a diferença, sem "aqui a gente usa", sem "é como chamamos no setor", sem emoji de correção. Ele aprende pelo exemplo e não sai da conversa se sentindo corrigido.
+
+3. UMA PERGUNTA POR MENSAGEM, SEM EXCEÇÃO. Apareceu empilhamento em 10 das 35 conversas, e foi o que fez o melhor lead do levantamento desaparecer: ele recebeu três opções de formato de produto de uma vez, mais uma dúvida sobre o encaixe da Ginger, e nunca mais respondeu. Nunca ofereça três alternativas para a pessoa escolher, nunca junte duas perguntas com "e", nunca emende uma pergunta burocrática no fim de uma mensagem que estava indo bem.
+
+4. NÃO PONHA EM DÚVIDA O ENCAIXE DA PESSOA. Proibido dizer "me ajuda a confirmar se a Ginger é o encaixe certo pra vocês", "não é bem o nosso caso" ou qualquer coisa que faça quem chegou interessado ter que se justificar. Explicar o escopo da Ginger é necessário e legítimo; transformar isso em dúvida sobre a pessoa não é. Se precisar alinhar escopo, faça em uma frase, e na mesma mensagem dê o próximo passo concreto.
+
+5. ENCERROU, ENCERROU. Apareceu encerramento repetido em 11 das 35 conversas, chegando a cinco despedidas seguidas com a mesma pessoa, e em um caso o agente se despediu e depois puxou assunto sozinho, com "Bom dia" às duas da tarde. Depois de encerrar, se a pessoa mandar algo curto do tipo "ok", "obrigado", "valeu", "blz", responda com UMA frase de no máximo seis palavras e pare. Se ela mandar outro agradecimento, NÃO responda mais nada. Nunca reabra assunto encerrado, nunca cumprimente de novo, nunca repita a lista de revendas, nunca repita informação que você já deu.
+
+6. NUNCA REPITA O QUE JÁ FOI DITO. As revendas parceiras se indicam uma vez por conversa. A regra do CNPJ se explica uma vez. O escopo da Ginger se explica uma vez. Se a pessoa não respondeu à sua pergunta, reformule em palavras diferentes, mais curtas, ou aceite a não resposta e siga.
+
+7. NÃO INVENTE ANEXO NEM LIMITAÇÃO. Só diga que não consegue abrir imagem, áudio ou arquivo se a pessoa REALMENTE tiver enviado um. Aconteceu duas vezes o agente alegar não conseguir abrir um arquivo que ninguém mandou, e nisso expor uma limitação de máquina sem nenhum motivo.
+
+8. SEM ASTERISCO, SEM MARKDOWN. No WhatsApp e no Instagram o asterisco não vira negrito, o cliente vê o asterisco na tela. Nunca escreva **assim**, nunca use ## nem listas com hífen formatadas. Texto corrido e quebra de linha, só isso.
+
+9. PREÇO: RESPONDA A PERGUNTA. Uma pessoa perguntou "quanto tá oud e olíbano" e a palavra preço não apareceu em nenhuma das onze mensagens seguintes do agente. Outra pediu orçamento e nunca ouviu nada sobre isso. Ignorar a pergunta é pior que não ter o número. Você não passa preço, e a razão é honesta: preço de fragrância depende do briefing, da concentração, da aplicação e do volume, então qualquer número dito antes disso estaria errado. Diga isso, em uma frase, e emende com a pergunta que aproxima do orçamento.
+Modelo: "Sobre valor, eu não consigo te passar um número aqui porque preço de fragrância depende do briefing, da concentração e do volume. Me conta [a próxima informação que falta] que a especialista já chega com uma proposta pra você."
+
+10. DADO DE TERCEIRO NÃO SE AFIRMA. Condição de fracionamento, preço, estoque e política das revendas parceiras são informação delas, não da Ginger. Indique a revenda e diga que as condições são conferidas com elas. Nunca afirme quantidade mínima ou fracionamento de revenda como se fosse dado nosso.
+
+11. NÃO NEGUE A EXISTÊNCIA DE COLEGA. Se a pessoa disser que foi encaminhada para alguém da Ginger citando o nome, nunca responda que essa pessoa não existe. Você não tem a lista de funcionários. Diga que vai registrar e siga a tabela de destinos.
+
 ⚠️ CNPJ A CONFIRMAR — TOM DE CONFERÊNCIA, NUNCA DE FISCALIZAÇÃO ⚠️
 De vez em quando você vai receber, colada na mensagem do contato, uma nota interna começando com CNPJ_A_CONFIRMAR. Ela significa uma coisa só: o número tem 14 dígitos mas não fecha na conferência de dígito verificador, o que quase sempre é um algarismo trocado na digitação. Não é suspeita sobre a pessoa e não muda nada na régua.
 Peça a confirmação UMA vez, leve, e diga o que ela ganha com isso. Algo assim:
@@ -725,7 +850,7 @@ O campo volume_insistido recebe "sim" ou "nao" e é obrigatório sempre que crit
 Nunca marque um critério como "OK" quando a informação não foi obtida. Campo sem informação é "FALHOU", e no caso do volume é "NAO_ESTIMOU".
 ⚠️ VALIDAÇÃO FINAL ANTES DE GERAR O BLOCO (obrigatório toda vez):
 Antes de escrever %%%LEAD_DATA%%%, verifique:
-1. Apliquei a REGRA ZERO? Se a pessoa não quer comprar da Ginger, a classificacao é NAO_LEAD e o resto não se aplica.
+1. Apliquei a REGRA ZERO? Se a pessoa não quer comprar da Ginger, a classificacao é NAO_LEAD e o resto não se aplica. E antes de escrever NAO_LEAD, confirmei que ela não está cobrando um retorno prometido? Quem cobra retorno é lead, e mantém a classificação que já tinha.
 2. O campo "email" OU "telefone" está preenchido? Se AMBOS estão vazios e a classificacao não é NAO_LEAD, NÃO gere o bloco. Peça o contato primeiro.
 3. O campo "nome" está preenchido? Se não, e a classificacao não é NAO_LEAD, NÃO gere o bloco.
 4. O campo "empresa" está preenchido? Se não, e a classificacao não é NAO_LEAD, NÃO gere o bloco.
@@ -1222,6 +1347,51 @@ async function enviarTemplateAbordagem(numero, primeiroNome, nomeEmpresa) {
     return { ok: false, erro: e.message };
   }
 }
+// Template de retomada. Mesma mecanica do de abordagem, texto e proposito
+// diferentes: aqui a conversa JA existiu, e o que faltou foi o nosso retorno.
+async function enviarTemplateRetomada(numero, primeiroNome, assunto) {
+  try {
+    const r = await fetch(urlMensagens(), {
+      method: 'POST',
+      headers: headersWa(),
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: numero,
+        type: 'template',
+        template: {
+          name: TEMPLATE_RETOMADA,
+          language: { code: TEMPLATE_IDIOMA },
+          components: [{
+            type: 'body',
+            parameters: [
+              { type: 'text', text: primeiroNome },
+              { type: 'text', text: assunto }
+            ]
+          }]
+        }
+      })
+    });
+    const data = await r.json();
+    if (!r.ok || data.error) {
+      console.error('Erro ao enviar template de retomada:', JSON.stringify(data).substring(0, 500));
+      return { ok: false, data };
+    }
+    return { ok: true, data, id: data.messages?.[0]?.id };
+  } catch(e) {
+    console.error('Falha de rede ao enviar template de retomada:', e.message);
+    return { ok: false, erro: e.message };
+  }
+}
+// O texto exato que a pessoa recebe. Fica aqui, em um lugar so, para entrar no
+// historico do modelo igual ao que foi enviado, e para a previa da rota
+// /retomar poder mostrar antes de disparar.
+function textoDaRetomada(primeiroNome, assunto) {
+  return `Olá, ${primeiroNome}! Aqui é a Ginger Fragrance Design.\n\n` +
+    `Nossa conversa sobre ${assunto} ficou sem o retorno que a gente combinou, e a demora foi nossa. ` +
+    `O fluxo de projetos cresceu muito nas últimas semanas e a sua conversa acabou não tendo o acompanhamento que devia ter.\n\n` +
+    `Quero retomar de onde a gente parou, sem te fazer repetir nada. Posso seguir por aqui?`;
+}
 // Marca a mensagem como lida e mostra "digitando". Se a conta não suportar o
 // indicador de digitação, o marcar como lida continua funcionando.
 async function marcarLidoEDigitando(messageId) {
@@ -1315,6 +1485,26 @@ async function atualizarQualificacao(rowIndex, classificacao, motivo) {
     console.log(`Planilha atualizada (qualificação): linha ${rowIndex} = "${classificacao}"`);
   } catch(e) {
     console.error('Erro ao atualizar qualificação:', e.message);
+  }
+}
+// ── QUALIFICACAO QUE JA ESTA GRAVADA NA LINHA
+// Serve para nao deixar uma mensagem nova apagar o que a conversa inteira ja
+// tinha estabelecido. Le a coluna K e a L.
+async function qualificacaoAtual(rowIndex) {
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets || !rowIndex) return null;
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!K${rowIndex}:L${rowIndex}`
+    });
+    const linha = (r.data.values || [])[0] || [];
+    const classificacao = String(linha[0] || '').trim().toUpperCase();
+    if (!classificacao) return null;
+    return { classificacao, motivo: String(linha[1] || '').trim() };
+  } catch(e) {
+    console.error('Erro ao ler qualificação atual:', e.message);
+    return null;
   }
 }
 // ── COLUNA O: ID DO CONTATO NO CANAL
@@ -1895,6 +2085,33 @@ async function tratarBlocoLead(parsed, ctx) {
     nome: parsed.nome || ctx.nomeFallback || '',
     origem: ctx.origem
   });
+  // ⚠️ QUEM JA FOI LEAD NAO VIRA NAO_LEAD POR UMA MENSAGEM NOVA ⚠️
+  // Caso Livia Leon, Atelie Lila Leon, linha 30. Em 12/08 ela concluiu o
+  // briefing e ouviu que a especialista entraria em contato. Em 18/08 voltou e
+  // perguntou "quanto tempo para o consultor entrar em contato? ja faz muito
+  // tempo". O agente leu aquilo como acompanhamento de contato existente, que a
+  // Regra Zero lista como NAO_LEAD, reclassificou a linha, mandou ela escrever
+  // para contato@ginger.ind.br, e como NAO_LEAD nao aciona o comercial,
+  // ninguem soube que uma lead estava cobrando o retorno que a Ginger prometeu.
+  // Uma classificacao ja estabelecida nao pode ser destruida assim. Lead que
+  // volta cobrando retorno e o contato mais quente que existe, nao o mais frio.
+  if (isNaoLead(parsed) && rowIndex) {
+    const anterior = await qualificacaoAtual(rowIndex);
+    if (anterior && ['BOM', 'POTENCIAL_FUTURO'].includes(anterior.classificacao)) {
+      console.log(`NAO_LEAD RECUSADO: ${parsed.nome} já estava como ${anterior.classificacao} na linha ${rowIndex}. Provável lead cobrando retorno.`);
+      parsed.classificacao = anterior.classificacao;
+      parsed.cobrandoRetorno = true;
+      parsed.motivo_classificacao =
+        `Contato voltou a falar com a Ginger e o agente tentou classificar como NAO_LEAD. ` +
+        `Recusado pelo backend: a linha já estava ${anterior.classificacao}. ` +
+        `Provável cobrança de retorno. Motivo anterior: ${anterior.motivo || '-'}`;
+      await atualizarStatus(rowIndex, 'voltou a falar, cobrando retorno');
+      await atualizarQualificacao(rowIndex, anterior.classificacao, parsed.motivo_classificacao);
+      await atualizarOrigem(rowIndex, ctx.origem);
+      await completarDadosLead(rowIndex, parsed);
+      return parsed;
+    }
+  }
   if (isNaoLead(parsed)) {
     console.log('NAO_LEAD identificado, e-mail bloqueado:', parsed.nome, parsed.empresa, parsed.motivo_classificacao);
     if (rowIndex) {
@@ -2008,11 +2225,42 @@ app.post('/whatsapp-cloud', async (req, res) => {
     await garantirLinhaDoContato({
       idCanal: chaveNumero(numero), telefone: numero, nome: '', origem: 'bot-site'
     });
-    let historico = await getConversa(numero) || [];
-    historico.push({ role: 'user', content: mensagem });
-    if (historico.length > 20) {
-      historico = historico.slice(-20);
+    const chaveFila = chaveNumero(numero);
+    await enfileirarMensagem(chaveFila, mensagem);
+    if (!await travarAtendimento(chaveFila)) {
+      console.log('Mensagem enfileirada, já existe atendimento em andamento:', chaveFila);
+      return;
     }
+    try {
+      await atenderWhatsappEmLote({ numero, msgId, chaveFila, primeira: mensagem });
+    } finally {
+      await liberarAtendimento(chaveFila);
+    }
+  } catch(error) {
+    console.error('Erro WhatsApp Cloud:', error.message);
+  }
+});
+// Atende tudo que a pessoa escreveu, de uma vez. O delay humanizado vem ANTES
+// de esvaziar a fila, e e ele que da tempo de a pessoa terminar de escrever.
+// Depois de responder, olha a fila de novo: se chegou coisa nova enquanto o
+// modelo gerava, atende essa rodada tambem, ate tres voltas. O teto existe para
+// que alguem mandando mensagem sem parar nao prenda o atendimento para sempre;
+// o que sobrar na fila e atendido no proximo evento.
+async function atenderWhatsappEmLote({ numero, msgId, chaveFila, primeira }) {
+  for (let volta = 1; volta <= 3; volta++) {
+    await delayHumanizado();
+    let pendentes = await drenarFila(chaveFila);
+    // Fila vazia na primeira volta significa Redis fora do ar, e nesse caso a
+    // mensagem que chegou neste evento e o que temos. Melhor responder do que
+    // engolir a mensagem do lead.
+    if (!pendentes.length && volta === 1 && primeira) pendentes = [primeira];
+    if (!pendentes.length) return;
+    if (pendentes.length > 1) {
+      console.log(`Fila de ${chaveFila}: ${pendentes.length} mensagens atendidas em uma resposta só`);
+    }
+    let historico = await getConversa(numero) || [];
+    historico.push({ role: 'user', content: juntarMensagens(pendentes) });
+    if (historico.length > 20) historico = historico.slice(-20);
     const cnpjTorto = anotarCnpjSuspeito(historico);
     if (cnpjTorto) console.log(`CNPJ a confirmar com ${numero}: ${formatarCnpj(cnpjTorto)}`);
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -2039,9 +2287,6 @@ app.post('/whatsapp-cloud', async (req, res) => {
     if (match) {
       try {
         const parsed = JSON.parse(match[1].trim());
-        if (!parsed.telefone || !parsed.telefone.trim() || parsed.telefone.trim() === '-') {
-          parsed.telefone = numero;
-        }
         leadDetectado = await tratarBlocoLead(parsed, {
           idCanal: chaveNumero(numero), telefone: numero,
           origem: 'bot-site', canal: 'whatsapp'
@@ -2053,19 +2298,14 @@ app.post('/whatsapp-cloud', async (req, res) => {
     const resposta = raw.replace(regex, '').trim();
     historico.push({ role: 'assistant', content: raw });
     await saveConversa(numero, historico);
-    await delayHumanizado();
     await marcarLidoEDigitando(msgId);
     await delay(3000);
     const envio = await enviarTexto(numero, resposta);
     console.log('Envio da resposta:', envio.ok ? 'ok' : 'FALHOU');
     if (envio.ok) await registrarConversa(numero, 'enviada', resposta);
-    if (leadDetectado) {
-      await enviarEmailLead(leadDetectado, numero);
-    }
-  } catch(error) {
-    console.error('Erro WhatsApp Cloud:', error.message);
+    if (leadDetectado) await enviarEmailLead(leadDetectado, numero);
   }
-});
+}
 // Busca nome e @ do contato. Sem isso a inbox mostraria so o ID numerico e
 // ninguem consegue auditar conversa de "17841400000000000".
 async function perfilInstagram(igsid) {
@@ -2089,6 +2329,30 @@ async function atenderCanalMeta(cfg) {
   const { psid, texto, chave, canal, origem, enviar, marcarVisto, perfil, notaDeContexto } = cfg;
   await marcarVisto(psid);
   await registrarConversa(chave, 'recebida', texto, origem);
+  // Mesma fila do WhatsApp. No Instagram o defeito apareceu com a Hilda: tres
+  // mensagens do agente em cinco segundos, todas com a mesma pergunta de CNPJ,
+  // e ela respondeu "Oi", sem entender o que estava acontecendo.
+  await enfileirarMensagem(chave, texto);
+  if (!await travarAtendimento(chave)) {
+    console.log(`Mensagem enfileirada no ${canal}, já existe atendimento em andamento:`, chave);
+    return;
+  }
+  try {
+    await atenderCanalMetaEmLote(cfg);
+  } finally {
+    await liberarAtendimento(chave);
+  }
+}
+async function atenderCanalMetaEmLote(cfg) {
+  const { psid, texto, chave, canal, origem, enviar, perfil, notaDeContexto } = cfg;
+  for (let volta = 1; volta <= 3; volta++) {
+  await delayHumanizado();
+  let pendentes = await drenarFila(chave);
+  if (!pendentes.length && volta === 1 && texto) pendentes = [texto];
+  if (!pendentes.length) return;
+  if (pendentes.length > 1) {
+    console.log(`Fila de ${chave}: ${pendentes.length} mensagens atendidas em uma resposta só`);
+  }
   let historico = await getConversaChave(chave) || [];
   // A linha nasce no PRIMEIRO contato, nao na conclusao da qualificacao.
   // Se esperasse o bloco de lead, quem conversa e some antes do fim
@@ -2109,7 +2373,7 @@ async function atenderCanalMeta(cfg) {
     });
     historico.push({ role: 'assistant', content: 'Entendido.' });
   }
-  historico.push({ role: 'user', content: texto });
+  historico.push({ role: 'user', content: juntarMensagens(pendentes) });
   if (historico.length > 20) historico = historico.slice(-20);
   const cnpjTorto = anotarCnpjSuspeito(historico);
   if (cnpjTorto) console.log(`CNPJ a confirmar com ${chave}: ${formatarCnpj(cnpjTorto)}`);
@@ -2149,11 +2413,11 @@ async function atenderCanalMeta(cfg) {
   const resposta = raw.replace(regex, '').trim();
   historico.push({ role: 'assistant', content: raw });
   await saveConversaChave(chave, historico);
-  await delayHumanizado();
   const envio = await enviar(psid, resposta);
   console.log(`Envio no ${canal}:`, envio.ok ? 'ok' : 'FALHOU');
   if (envio.ok) await registrarConversa(chave, 'enviada', resposta, origem);
   if (leadDetectado) await enviarEmailLead(leadDetectado, `${psid} (${canal})`);
+  }
 }
 // Extrai o evento de mensagem util de um webhook no formato Messenger, ou
 // devolve null quando o evento deve ser ignorado. Os motivos de ignorar sao
@@ -2574,6 +2838,7 @@ app.get('/inbox', async (req, res) => {
       if (u === 'BOM') return '#1B7F4B';
       if (u === 'POTENCIAL_FUTURO') return '#B8860B';
       if (u === 'NAO_LEAD') return '#7A7A7A';
+      if (u === 'POS_VENDA') return '#2C7A9E';
       if (u === 'RUIM') return '#C0392B';
       return '#47166B';
     };
@@ -2979,8 +3244,8 @@ let MES = D.mesInicial, ANO = D.anoInicial, TODOS = false;
 const MESES=['','Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 const ROT_EST={qualificado:'Qualificado',sem_resposta:'Sem resposta',abandonou:'Parou de responder',em_conversa:'Em conversa',nao_abordado:'Não abordado'};
 const NOTA_EST={sem_resposta:'abordado, nunca respondeu',abandonou:'respondeu e sumiu, sem devolutiva',em_conversa:'ativo nas últimas 24h',qualificado:'conversa concluída',nao_abordado:'ainda na fila'};
-const NOTA_QUAL={BOM:'passou nos quatro critérios',POTENCIAL_FUTURO:'sem CNPJ, volume baixo ou não informado',RUIM:'sem projeto ou interesse real',NAO_LEAD:'fornecedor, cobrança, assunto interno'};
-const TOK={BOM:'bom',POTENCIAL_FUTURO:'fut',RUIM:'ruim',NAO_LEAD:'nao'};
+const NOTA_QUAL={BOM:'passou nos quatro critérios',POTENCIAL_FUTURO:'sem CNPJ, volume baixo ou não informado',POS_VENDA:'cliente que já comprou, pedindo documento ou tratando de pedido',RUIM:'sem projeto ou interesse real',NAO_LEAD:'fornecedor, cobrança, assunto interno'};
+const TOK={BOM:'bom',POTENCIAL_FUTURO:'fut',POS_VENDA:'pos',RUIM:'ruim',NAO_LEAD:'nao'};
 // Rotulos legiveis. "bot-planilha" nao significa nada para quem assiste a
 // apresentacao; o nome do canal significa.
 const ROT_ORIGEM={'bot-planilha':'WhatsApp, abordagem ativa','bot-site':'Site e WhatsApp receptivo',
@@ -3017,7 +3282,7 @@ function delta(atual,anterior){
 function contas(arr){const n=e=>arr.filter(l=>l.estado===e).length,q=v=>arr.filter(l=>l.qual===v).length;
  return {captados:arr.length,abordados:arr.filter(l=>l.estado!=='nao_abordado').length,
  responderam:arr.filter(l=>l.recebidas>0).length,qualificados:arr.filter(l=>l.qual).length,
- bom:q('BOM'),futuro:q('POTENCIAL_FUTURO'),ruim:q('RUIM'),naoLead:q('NAO_LEAD'),
+ bom:q('BOM'),futuro:q('POTENCIAL_FUTURO'),posVenda:q('POS_VENDA'),ruim:q('RUIM'),naoLead:q('NAO_LEAD'),
  projetos:arr.filter(l=>l.projeto).length,n};}
 function csv(arr){
  const cab=['Entrada','Nome','Empresa','Canal','Estado','Qualificacao','Mensagens','Recebidas','Projeto','Motivo'];
@@ -3075,6 +3340,7 @@ function render(){
   barra({rot:'BOM',valor:C.bom,max:maxQual,cor:'var(--serie)',sw:'bom',nota:NOTA_QUAL.BOM,clic:1,dim:'qual',chave:'BOM',ativa:F.qual==='BOM'})+
   barra({rot:'POTENCIAL_FUTURO',valor:C.futuro,max:maxQual,cor:'var(--serie)',sw:'fut',nota:NOTA_QUAL.POTENCIAL_FUTURO,clic:1,dim:'qual',chave:'POTENCIAL_FUTURO',ativa:F.qual==='POTENCIAL_FUTURO'})+
   barra({rot:'RUIM',valor:C.ruim,max:maxQual,cor:'var(--serie)',sw:'ruim',nota:NOTA_QUAL.RUIM,clic:1,dim:'qual',chave:'RUIM',ativa:F.qual==='RUIM'})+
+  barra({rot:'PÓS-VENDA',valor:C.posVenda,max:maxQual,cor:'var(--serie)',sw:'pos',nota:NOTA_QUAL.POS_VENDA,clic:1,dim:'qual',chave:'POS_VENDA',ativa:F.qual==='POS_VENDA'})+
   barra({rot:'NAO_LEAD',valor:C.naoLead,max:maxQual,cor:'var(--serie)',sw:'nao',nota:NOTA_QUAL.NAO_LEAD,clic:1,dim:'qual',chave:'NAO_LEAD',ativa:F.qual==='NAO_LEAD'})+
   '</div>'+
   '<div class="card"><h2>Onde o lead parou</h2><p class="leg">Estados exclusivos. "Sem resposta" mede o template de abordagem. "Parou de responder" mede o agente perdendo a pessoa no meio da conversa.</p>'+
@@ -3091,7 +3357,7 @@ function render(){
   '<tbody>'+(tab||'<tr><td colspan="10">Nenhum lead neste recorte.</td></tr>')+'</tbody></table></div></div>';
  const origensTodas=[...new Set(D.leads.map(l=>l.origem))].sort();
  chips('f-origem','origem',origensTodas,rotOrigem);
- chips('f-qual','qual',['BOM','POTENCIAL_FUTURO','RUIM','NAO_LEAD']);
+ chips('f-qual','qual',['BOM','POTENCIAL_FUTURO','POS_VENDA','RUIM','NAO_LEAD']);
  chips('f-estado','estado',['sem_resposta','abandonou','em_conversa','qualificado','nao_abordado'],v=>ROT_EST[v]);
  document.getElementById('limpar').hidden=!ativo;
 }
@@ -3218,7 +3484,7 @@ render();
 //
 // Esta rota e de mao unica e roda uma vez. Por padrao ela apenas MOSTRA o que
 // faria. Só muda a planilha com &aplicar=1.
-const CLASSIFICACOES_VALIDAS = ['BOM', 'POTENCIAL_FUTURO', 'RUIM', 'NAO_LEAD'];
+const CLASSIFICACOES_VALIDAS = ['BOM', 'POTENCIAL_FUTURO', 'POS_VENDA', 'RUIM', 'NAO_LEAD'];
 // ══════════════════════════════════════════════════════════════
 // ── ROTA: CONVERSA DE UM CONTATO (JSON, para o painel)
 // ══════════════════════════════════════════════════════════════
@@ -3913,6 +4179,115 @@ app.get('/reprocessar', async (req, res) => {
 // bloco foi descartado em silencio, ou o agente nunca o gerou. Nos dois casos
 // o resultado e o mesmo: ninguem foi avisado e a pessoa ficou esperando.
 // Rota de leitura. Devolve, para cada caso, o endereco do /reprocessar.
+// ══════════════════════════════════════════════════════════════
+// ── ROTA: RETOMAR CONVERSA COM QUEM FICOU SEM RETORNO
+// ══════════════════════════════════════════════════════════════
+// Pedido do Pedro em 19/08, depois do pente fino. Seis pessoas conversaram de
+// verdade, alguma delas ouviu que uma especialista ligaria, e nenhuma teve
+// retorno. A janela de 24 horas da Meta fechou dias atras, entao a unica forma
+// de reabrir e por template aprovado.
+//
+// O que esta rota faz de diferente de uma abordagem comum: ela SEMEIA a conversa
+// anterior inteira no historico do modelo, lida da aba Conversas, mais uma nota
+// interna dizendo o que ja se sabe e o que falta. Quando a pessoa responder, o
+// agente continua de onde parou, sem pedir nada que ela ja disse. Fazer alguem
+// repetir briefing depois de esperar uma semana seria a segunda ofensa.
+//
+// Previa por padrao. So dispara com &aplicar=1.
+app.get('/retomar', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const alvo = chaveConversa((req.query.contato || '').trim());
+  const aplicar = req.query.aplicar === '1';
+  const assunto = (req.query.assunto || '').trim();
+  const nomeManual = (req.query.nome || '').trim();
+  const faltando = (req.query.falta || '').trim();
+  if (!alvo) return res.status(400).json({ erro: 'informe &contato=<telefone>' });
+  if (alvo.startsWith(IG_PREFIXO) || alvo.startsWith(FB_PREFIXO) || alvo.startsWith('site-')) {
+    return res.status(400).json({
+      erro: 'só funciona no WhatsApp',
+      porque: 'template da Meta não existe para Instagram, Facebook nem chat do site'
+    });
+  }
+  if (!assunto) {
+    return res.status(400).json({
+      erro: 'informe &assunto=<o projeto da pessoa, em poucas palavras>',
+      porque: 'entra no texto do template, no lugar de "nossa conversa sobre ___"',
+      exemplo: '&assunto=a identidade olfativa do escritório'
+    });
+  }
+  try {
+    const historico = await montarHistoricoDaPlanilha(alvo);
+    if (!historico) return res.status(500).json({ erro: 'sheets indisponivel' });
+    if (!historico.length) {
+      return res.status(404).json({ erro: 'nenhuma conversa encontrada, não há o que retomar', contato: alvo });
+    }
+    const rowIndex = await buscarLinhaPorIdCanal(alvo) || await buscarLinhaPorTelefone(alvo);
+    let nome = nomeManual;
+    if (!nome && rowIndex) {
+      const sheets = await getSheetsClient();
+      if (sheets) {
+        const r = await sheets.spreadsheets.values.get({
+          spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!B${rowIndex}`
+        });
+        nome = String(((r.data.values || [])[0] || [])[0] || '').trim();
+      }
+    }
+    const primeiroNome = (nome || '').split(' ')[0] || 'tudo bem';
+    const texto = textoDaRetomada(primeiroNome, assunto);
+    const nota =
+      `[CONTEXTO INTERNO — não mencionar esta nota ao contato]\n` +
+      `RETOMADA DE CONVERSA. Toda a conversa acima é real e aconteceu dias atrás, entre você e esta pessoa. ` +
+      `Ela ficou sem o retorno que a Ginger devia ter dado, e acabamos de enviar a mensagem de retomada abaixo.\n` +
+      `Regras desta retomada, todas obrigatórias:\n` +
+      `1. Ela JÁ CONTOU o que está na conversa acima. Não pergunte nada que já esteja lá, nem para confirmar. ` +
+      `Fazer alguém repetir briefing depois de esperar uma semana é a segunda ofensa seguida.\n` +
+      `2. Peça desculpa UMA vez, em uma frase, sem se alongar e sem culpar ninguém. Já pedimos na mensagem de retomada; não repita.\n` +
+      `3. O que falta obter: ${faltando || 'confira a conversa acima contra a régua e peça só o que estiver de fato em branco'}.\n` +
+      `4. Uma pergunta por mensagem, sempre. Se faltar volume, suba os três degraus: pergunta aberta, ajuda a estimar com números do mundo dela, e por último ofereça faixas para ela só escolher.\n` +
+      `5. Não prometa prazo. Quando tiver o que falta, encerre acionando a especialista.\n` +
+      `6. Se ela reclamar da demora, dê razão a ela em uma frase e siga. Nada de "entendo sua ansiedade".`;
+    const semear = [
+      ...historico.map(m => ({ role: m.role, content: m.content })),
+      { role: 'user', content: nota },
+      { role: 'assistant', content: texto }
+    ];
+    if (!aplicar) {
+      return res.json({
+        modo: 'PRÉVIA, nada foi enviado',
+        contato: alvo, linha: rowIndex || null,
+        nome: nome || '(sem nome na planilha)', primeiroNome, assunto,
+        mensagensDaConversaAnterior: historico.length,
+        templateQueSeriaUsado: TEMPLATE_RETOMADA,
+        textoQueAPessoaRecebe: texto,
+        oQueOAgenteVaiSaber: nota,
+        comoAplicar: 'acrescente &aplicar=1 no endereço',
+        oQueAcontece: 'Envia o template de verdade, semeia a conversa anterior no histórico do agente e marca a linha como retomada. A pessoa recebe a mensagem NA HORA.'
+      });
+    }
+    const envio = await enviarTemplateRetomada(alvo, primeiroNome, assunto);
+    if (!envio.ok) {
+      return res.status(502).json({
+        erro: 'a Meta recusou o envio', contato: alvo,
+        detalhe: envio.data || envio.erro,
+        dicaProvavel: `confira se o template "${TEMPLATE_RETOMADA}" existe e está APROVADO no WhatsApp Manager, no idioma ${TEMPLATE_IDIOMA}`
+      });
+    }
+    await saveConversa(alvo, semear.slice(-20));
+    await registrarConversa(alvo, 'enviada', texto, 'bot-retomada');
+    if (rowIndex) await atualizarStatus(rowIndex, `retomado pelo agente em ${agoraBrasil().split(' ')[0]}`);
+    console.log(`Retomada enviada para ${alvo} (${primeiroNome}), assunto: ${assunto}`);
+    res.json({
+      modo: 'ENVIADO', contato: alvo, linha: rowIndex || null,
+      primeiroNome, assunto, idDaMensagem: envio.id || null,
+      historicoSemeado: semear.length,
+      textoEnviado: texto,
+      proximoPasso: 'quando a pessoa responder, o agente continua de onde a conversa parou'
+    });
+  } catch(e) {
+    console.error('Erro na retomada:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
 app.get('/leads-mudos', async (req, res) => {
   if (!exigeChave(req, res)) return;
   const minimo = Math.max(2, parseInt(req.query.min || '4', 10));
@@ -4521,6 +4896,22 @@ function destinoDoEmail(lead, placar) {
   const classe = classificacaoNormalizada(lead) || 'BOM';
   const empresa = lead.empresa || 'Sem empresa';
   const corpo = `${classe} (${placar.ok}/4): ${empresa} — Agente Ginger`;
+  // Lead que volta cobrando o retorno prometido vai para o comercial na hora,
+  // seja BOM ou POTENCIAL_FUTURO. Ela nao esta pedindo informacao, esta
+  // esperando desde a semana passada.
+  if (lead.cobrandoRetorno) {
+    return { para: comercial.length ? comercial : triagem, rotulo: 'comercial (cobrando retorno)',
+      assunto: `[COBRANDO RETORNO] Lead ${corpo}` };
+  }
+  // Pos-venda vai para os mesmos e-mails do lead, decisao do Pedro em 19/08.
+  // O caso que criou esta classificacao: o Renan, da Valenzza, cliente que ja
+  // compra, pediu dois certificados de analise, foi despachado para o
+  // contato@ em vinte segundos e ouviu "boa sorte". Cliente pagante nao e
+  // NAO_LEAD e nao pode virar silencio.
+  if (classe === 'POS_VENDA') {
+    return { para: comercial.length ? comercial : triagem, rotulo: 'comercial (pós-venda)',
+      assunto: `[PÓS-VENDA] ${empresa} — Agente Ginger` };
+  }
   if (lead.promessaDeEspecialistaPendente) {
     return { para: comercial.length ? comercial : triagem, rotulo: 'comercial (promessa em aberto)',
       assunto: `[ESPERANDO CONTATO] Lead ${corpo}` };
@@ -4584,6 +4975,14 @@ async function enviarEmailLead(lead, numero = null) {
       para desfazer, então alguém precisa dar um retorno, mesmo que seja para
       direcionar às revendas.
     </div>` : '';
+  const avisoCobranca = lead.cobrandoRetorno ? `
+    <div style="border-left:4px solid #C0392B;background:#FDECEA;padding:12px 14px;margin:0 0 14px">
+      <b style="color:#C0392B">ESTA PESSOA VOLTOU PARA COBRAR O RETORNO.</b><br>
+      Ela já havia concluído uma conversa com a Ginger e ouviu que uma especialista
+      entraria em contato. Voltou a escrever porque isso não aconteceu. É o contato
+      mais quente da sua caixa hoje: alguém que quer tanto que veio atrás.
+      Responda por onde ela escreveu, não por e-mail.
+    </div>` : '';
   const falta = Array.isArray(lead.dadosIncompletos) ? lead.dadosIncompletos : [];
   const rotuloFalta = { nome: 'o nome da pessoa', empresa: 'o nome da empresa', contato: 'e-mail e telefone' };
   const avisoIncompleto = falta.length ? `
@@ -4635,6 +5034,7 @@ async function enviarEmailLead(lead, numero = null) {
     : '-';
   const html = `
     <h2 style="color:#47166B">Novo Lead ${lead.classificacao || 'sem classificação'} — Ginger Agente</h2>
+    ${avisoCobranca}
     ${avisoIncompleto}
     ${avisoPromessa}
     ${avisoVolume}

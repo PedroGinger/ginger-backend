@@ -4132,11 +4132,24 @@ app.get('/reprocessar', async (req, res) => {
         if (achada) {
           const daPlanilha = { nome: achada[1], email: achada[2], empresa: achada[4], cnpj: achada[7] };
           const vazio = v => !(v && String(v).trim() && String(v).trim() !== '-');
+          let cnpjVeioDaPlanilha = false;
           for (const campo of ['nome', 'email', 'empresa', 'cnpj']) {
             if (vazio(parsed[campo]) && !vazio(daPlanilha[campo])) {
               parsed[campo] = String(daPlanilha[campo]).trim();
+              if (campo === 'cnpj') cnpjVeioDaPlanilha = true;
               console.log(`Reprocessamento de ${alvo}: ${campo} veio da planilha, o bloco não tinha`);
             }
+          }
+          // O modelo apura os criterios lendo so a conversa. A Livia informou o
+          // CNPJ pelo formulario do site, entao ele marcou criterio_cnpj como
+          // FALHOU com razao, do ponto de vista dele. Depois de preencher o
+          // campo com um CNPJ que existe e fecha no digito verificador, deixar o
+          // criterio em vermelho ao lado dele e so confundir quem le o cartao.
+          // O criterio e literalmente "tem CNPJ, empresa formal", e tem.
+          if (cnpjVeioDaPlanilha && validarCnpj(parsed.cnpj)
+              && String(parsed.criterio_cnpj || '').trim().toUpperCase() !== 'OK') {
+            parsed.criterio_cnpj = 'OK';
+            console.log(`Reprocessamento de ${alvo}: criterio_cnpj corrigido para OK, o CNPJ da planilha é válido`);
           }
         }
       }

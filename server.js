@@ -654,6 +654,18 @@ SÓ DEPOIS DOS TRÊS DEGRAUS, se a pessoa continuar sem conseguir dar nem uma fa
 Se a pessoa der qualquer estimativa, mesmo grosseira, mesmo em faixa, ela conta. Estimativa acima do mínimo é criterio_volume "OK". Estimativa abaixo do mínimo é "ABAIXO", e aí sim são as revendas.
 Nunca desconte o lead pela pergunta que VOCÊ não fez. Se você não subiu os três degraus, marque criterio_volume "NAO_ESTIMOU" e volume_insistido "nao", com honestidade. O sistema trata esse caso, e mentir aqui faz o comercial ligar para a pessoa errada.
 
+⚠️ CNPJ A CONFIRMAR — TOM DE CONFERÊNCIA, NUNCA DE FISCALIZAÇÃO ⚠️
+De vez em quando você vai receber, colada na mensagem do contato, uma nota interna começando com CNPJ_A_CONFIRMAR. Ela significa uma coisa só: o número tem 14 dígitos mas não fecha na conferência de dígito verificador, o que quase sempre é um algarismo trocado na digitação. Não é suspeita sobre a pessoa e não muda nada na régua.
+Peça a confirmação UMA vez, leve, e diga o que ela ganha com isso. Algo assim:
+"Deixa eu confirmar esse CNPJ com você, acho que pode ter escapado um dígito: [repita o número exatamente como ele mandou]. Pergunto porque é com ele que a nossa especialista já chega na conversa entendendo o cenário da sua empresa, aí vocês não perdem tempo com cadastro e vão direto ao projeto."
+Regras de tom, todas obrigatórias:
+- NUNCA use as palavras "inválido", "inexistente", "errado", "incorreto", "não consta", "não confere" nem "verificação". Você está conferindo um dado com a pessoa, não auditando ninguém.
+- Repita o número como ele enviou, para ele achar o dígito só olhando.
+- Uma vez só. Se ele reenviar o mesmo número, disser que está certo, não souber de cabeça ou simplesmente ignorar a pergunta, aceite na hora, agradeça e siga a conversa como se nada tivesse acontecido. A especialista é avisada por dentro e resolve.
+- Isso NUNCA é condição para continuar. Não trave o briefing, não deixe de classificar e não deixe de acionar a especialista por causa de um dígito.
+- Se ele mandar um número novo, siga em frente sem comentar a diferença.
+- Não peça foto do cartão CNPJ, nem contrato social, nem comprovante de nada.
+
 ⚠️ NUNCA PROMETA A ESPECIALISTA SEM TER O NOME DA EMPRESA ⚠️
 "Vou acionar nossa especialista" é um compromisso da Ginger com aquela pessoa, e depois de dito não dá para desfazer. Do outro lado alguém passa a esperar um telefonema.
 Antes de dizer essa frase, confirme que você tem as QUATRO coisas: nome da pessoa, NOME DA EMPRESA, pelo menos um e-mail ou telefone, e o volume resolvido, seja com estimativa da pessoa, seja depois de subir os três degraus. Faltando qualquer uma, você não encerra e não promete nada, você pergunta o que falta.
@@ -801,14 +813,37 @@ function placarCriterios(lead) {
 // comercial. O prompt já pede isso, mas prompt é instrução e código é garantia.
 function corrigirClassificacaoSeInconsistente(lead) {
   const classif = classificacaoNormalizada(lead);
-  if (classif !== 'BOM') return { corrigido: false, classificacao: classif };
+  if (classif !== 'BOM' && classif !== 'POTENCIAL_FUTURO') return { corrigido: false, classificacao: classif };
   // Quando um humano revisou a conversa e decidiu, a decisao dele manda.
   // Sem esta saida, a revisao manual seria desfeita na linha seguinte pelo
   // proprio rebaixamento que ela veio corrigir.
   if (lead.decisaoHumana) {
-    console.log('Rebaixamento automático não aplicado: classificação definida por decisão humana:', lead.nome);
+    console.log('Correção automática não aplicada: classificação definida por decisão humana:', lead.nome);
     return { corrigido: false, classificacao: classif };
   }
+  const placarPrevio = placarCriterios(lead);
+  const soFaltaVolumeQueNinguemPerguntou =
+    ['criterio_cnpj', 'criterio_projeto', 'criterio_segmento'].every(c => placarPrevio.detalhe[c] === 'OK')
+    && placarPrevio.detalhe.criterio_volume === 'NAO_ESTIMOU'
+    && !insistiuNoVolume(lead);
+  // ── PROMOCAO
+  // A trava so sabia rebaixar. Mas o proprio agente ja aplica a regua antes de
+  // gerar o bloco, entao ele mesmo escreve POTENCIAL_FUTURO quando o volume nao
+  // sai, e nesse caso nao havia BOM nenhum para o backend segurar: o lead
+  // passava direto. Foi o que aconteceu com o Leonardo no primeiro teste depois
+  // do deploy. O prompt continua exigindo os tres degraus, como tem que ser, e
+  // o codigo conserta quando o agente nao os sobe.
+  if (classif === 'POTENCIAL_FUTURO' && soFaltaVolumeQueNinguemPerguntou) {
+    lead.classificacao = 'BOM';
+    lead.volumeAConfirmar = true;
+    const antes = lead.motivo_classificacao || '';
+    lead.motivo_classificacao =
+      `Promovido a BOM: reprovado só em volume, e o agente não insistiu pela estimativa. ` +
+      `Volume a confirmar na ligação. Motivo original: ${antes}`;
+    console.log('POTENCIAL_FUTURO promovido a BOM, volume a confirmar:', lead.nome, lead.empresa);
+    return { corrigido: true, classificacao: 'BOM' };
+  }
+  if (classif !== 'BOM') return { corrigido: false, classificacao: classif };
   const placar = placarCriterios(lead);
   if (placar.informados !== 4 || placar.ok === 4) return { corrigido: false, classificacao: 'BOM' };
   // ── O VOLUME NAO REPROVA SOZINHO QUANDO NINGUEM INSISTIU
@@ -822,7 +857,7 @@ function corrigirClassificacaoSeInconsistente(lead) {
   const volume = placar.detalhe.criterio_volume;
   const outrosReprovados = ['criterio_cnpj', 'criterio_projeto', 'criterio_segmento']
     .filter(c => placar.detalhe[c] !== 'OK');
-  if (!outrosReprovados.length && volume === 'NAO_ESTIMOU' && !insistiuNoVolume(lead)) {
+  if (soFaltaVolumeQueNinguemPerguntou) {
     lead.volumeAConfirmar = true;
     const antes = lead.motivo_classificacao || '';
     lead.motivo_classificacao =
@@ -892,6 +927,176 @@ function numeroDiscavel(bruto) {
 // Texto qualquer passava reto. Agora a regra e outra: o campo tem que conter um
 // telefone de verdade. Se nao contiver, vale o numero do canal, que o sistema
 // sempre sabe qual e.
+// ══════════════════════════════════════════════════════════════
+// ── CONSULTA DO CNPJ NA RECEITA
+// ══════════════════════════════════════════════════════════════
+// Pedido do Pedro, 19/08. Hoje a Juliana recebe o cartao com o CNPJ cru e vai
+// pesquisar na mao para descobrir razao social, situacao e CNAE, e so depois
+// disso sabe dizer ao lead se a Ginger atende aquele ramo. A consulta e sempre
+// a mesma e o backend pode fazer antes, uma vez, para todo mundo.
+//
+// ⚠️ ISTO NAO CLASSIFICA NADA. Decisao do Pedro registrada no dossie 22 e 23:
+// o agente nao avalia nem filtra por ramo, e nao pode dizer ao lead que o ramo
+// nao importa, porque o CNAE e avaliado DEPOIS, pela especialista. A consulta
+// entra no e-mail como informacao para a especialista, nunca na regua e nunca
+// na conversa.
+//
+// Digito verificador do CNPJ. Pega numero digitado errado e numero inventado
+// antes de gastar uma chamada de rede com ele.
+function validarCnpj(bruto) {
+  const n = String(bruto || '').replace(/\D/g, '');
+  if (n.length !== 14) return false;
+  if (/^(\d)\1{13}$/.test(n)) return false;
+  const digito = (base) => {
+    let peso = base.length === 12 ? 5 : 6, soma = 0;
+    for (const c of base) {
+      soma += parseInt(c, 10) * peso;
+      peso = peso === 2 ? 9 : peso - 1;
+    }
+    const resto = soma % 11;
+    return resto < 2 ? 0 : 11 - resto;
+  };
+  const base = n.slice(0, 12);
+  return n === base + digito(base) + digito(base + digito(base));
+}
+function formatarCnpj(bruto) {
+  const n = String(bruto || '').replace(/\D/g, '');
+  if (n.length !== 14) return String(bruto || '');
+  return `${n.slice(0,2)}.${n.slice(2,5)}.${n.slice(5,8)}/${n.slice(8,12)}-${n.slice(12)}`;
+}
+// As duas fontes publicas devolvem os mesmos dados com nomes de campo
+// diferentes, e nomes de campo de API mudam sem avisar. O normalizador aceita
+// varios nomes para cada informacao e ignora o que nao vier, entao a consulta
+// degrada em vez de quebrar. A rota /cnpj-test mostra a resposta crua para
+// conferir contra a realidade quando algo parecer faltando.
+function normalizarCnpjApi(d, fonte) {
+  if (!d || typeof d !== 'object') return null;
+  const pega = (...nomes) => {
+    for (const n of nomes) {
+      const v = d[n];
+      if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim();
+    }
+    return '';
+  };
+  const secundarios = [];
+  const listaCrua = d.cnaes_secundarios || d.atividades_secundarias || d.cnaeSecundarios || [];
+  if (Array.isArray(listaCrua)) {
+    for (const item of listaCrua.slice(0, 6)) {
+      if (!item) continue;
+      const codigo = String(item.codigo || item.code || item.cnae || '').trim();
+      const desc = String(item.descricao || item.text || item.descricao_cnae || '').trim();
+      if (!codigo && !desc) continue;
+      if (codigo === '0' || desc.toLowerCase() === 'não informada') continue;
+      secundarios.push({ codigo, descricao: desc });
+    }
+  }
+  const razao = pega('razao_social', 'nome', 'company_name');
+  if (!razao) return null;
+  return {
+    fonte,
+    razaoSocial: razao,
+    nomeFantasia: pega('nome_fantasia', 'fantasia', 'trade_name'),
+    situacao: pega('descricao_situacao_cadastral', 'situacao', 'situacao_cadastral'),
+    dataSituacao: pega('data_situacao_cadastral', 'data_situacao'),
+    abertura: pega('data_inicio_atividade', 'abertura'),
+    porte: pega('porte', 'descricao_porte'),
+    naturezaJuridica: pega('natureza_juridica', 'descricao_natureza_juridica'),
+    capitalSocial: pega('capital_social'),
+    municipio: pega('municipio', 'descricao_municipio', 'city'),
+    uf: pega('uf', 'state'),
+    cnaePrincipal: {
+      codigo: pega('cnae_fiscal', 'cnae_principal', 'codigo_cnae_fiscal')
+        || (d.atividade_principal && d.atividade_principal[0] && String(d.atividade_principal[0].code || '').trim()) || '',
+      descricao: pega('cnae_fiscal_descricao', 'descricao_cnae_fiscal')
+        || (d.atividade_principal && d.atividade_principal[0] && String(d.atividade_principal[0].text || '').trim()) || ''
+    },
+    cnaesSecundarios: secundarios
+  };
+}
+// ── CNPJ QUE NAO FECHA NA CONFERENCIA, AINDA NA CONVERSA
+// Pedido do Pedro, 19/08: em vez de avisar so a Juliana depois, pedir a
+// confirmacao enquanto a pessoa esta ali, de forma leve. Quem tem intencao
+// comercial de verdade confirma sem estranhar, e a especialista chega na
+// ligacao com o cadastro certo em vez de descobrir o erro pesquisando.
+// Procura sequencias de 14 digitos, tolerando a pontuacao da mascara, e
+// devolve a primeira que nao passa no digito verificador.
+function cnpjSuspeitoNaMensagem(texto) {
+  const achados = String(texto || '').match(/(?:\d[.\-/\s]?){13}\d/g) || [];
+  for (const bruto of achados) {
+    const n = bruto.replace(/\D/g, '');
+    if (n.length === 14 && !validarCnpj(n)) return n;
+  }
+  return null;
+}
+// A nota entra colada na propria mensagem do lead, e nao como mensagem
+// separada, para nao criar dois turnos de usuario seguidos. O texto limpo ja
+// foi para a planilha antes disso, entao a anotacao nao aparece no painel.
+// O marcador serve de trava: pedimos a confirmacao de cada numero UMA vez.
+function semNotaInterna(texto) {
+  return String(texto || '').split('\n\n[CONTEXTO INTERNO')[0].trim();
+}
+function anotarCnpjSuspeito(historico) {
+  const ultima = historico[historico.length - 1];
+  if (!ultima || ultima.role !== 'user' || typeof ultima.content !== 'string') return null;
+  const suspeito = cnpjSuspeitoNaMensagem(ultima.content);
+  if (!suspeito) return null;
+  const marcador = `CNPJ_A_CONFIRMAR:${suspeito}`;
+  if (historico.some(m => typeof m.content === 'string' && m.content.includes(marcador))) return null;
+  ultima.content += `\n\n[CONTEXTO INTERNO — não mencione esta nota ao contato] ${marcador}\n` +
+    `O número de 14 dígitos que ele acabou de mandar não fecha na conferência de dígito verificador, ` +
+    `o que quase sempre é um algarismo trocado na digitação. Peça a confirmação UMA vez, no tom leve ` +
+    `descrito no prompt, repetindo o número como ele enviou e explicando que é isso que permite à ` +
+    `especialista já chegar na conversa com o cenário da empresa na mão. Se ele mantiver o número, ` +
+    `aceite na hora e siga a conversa: isto nunca trava o briefing nem a classificação.`;
+  return suspeito;
+}
+async function buscarNaFonte(url, fonte) {
+  try {
+    const r = await fetch(url, {
+      headers: { 'Accept': 'application/json', 'User-Agent': 'GingerAgente/1.0' },
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!r.ok) return { erro: `${fonte} respondeu ${r.status}` };
+    const dados = await r.json();
+    const normal = normalizarCnpjApi(dados, fonte);
+    if (!normal) return { erro: `${fonte} respondeu sem razão social` };
+    return { dados: normal, cru: dados };
+  } catch (e) {
+    return { erro: `${fonte}: ${e.name === 'TimeoutError' ? 'tempo esgotado' : e.message}` };
+  }
+}
+// Cache de 30 dias no Redis. Cadastro na Receita muda pouco, e o mesmo CNPJ
+// reaparece quando o lead volta a conversar ou quando alguem usa /reprocessar.
+async function consultarCnpj(bruto, { comCru = false } = {}) {
+  const n = String(bruto || '').replace(/\D/g, '');
+  if (n.length !== 14) return { ok: false, erro: 'CNPJ não tem 14 dígitos', formatado: formatarCnpj(bruto), digitoOk: false };
+  const digitoOk = validarCnpj(n);
+  if (!digitoOk) return { ok: false, erro: 'dígito verificador não fecha, número provavelmente digitado errado', formatado: formatarCnpj(n), digitoOk: false };
+  if (!comCru) {
+    const salvo = await redis('GET', `cnpj:${n}`);
+    if (salvo) {
+      try { return { ok: true, digitoOk: true, formatado: formatarCnpj(n), cache: true, ...JSON.parse(salvo) }; }
+      catch (e) { /* cache corrompido, segue para a consulta */ }
+    }
+  }
+  const tentativas = [
+    [`https://brasilapi.com.br/api/cnpj/v1/${n}`, 'BrasilAPI'],
+    [`https://receitaws.com.br/v1/cnpj/${n}`, 'ReceitaWS']
+  ];
+  const erros = [];
+  for (const [url, fonte] of tentativas) {
+    const r = await buscarNaFonte(url, fonte);
+    if (r.dados) {
+      await redis('SET', `cnpj:${n}`, JSON.stringify(r.dados), 'EX', 2592000);
+      console.log(`CNPJ ${formatarCnpj(n)} consultado na ${fonte}: ${r.dados.razaoSocial}`);
+      return { ok: true, digitoOk: true, formatado: formatarCnpj(n), cache: false, ...r.dados,
+        ...(comCru ? { cru: r.cru } : {}) };
+    }
+    erros.push(r.erro);
+  }
+  console.log(`CNPJ ${formatarCnpj(n)}: consulta falhou. ${erros.join(' | ')}`);
+  return { ok: false, digitoOk: true, formatado: formatarCnpj(n), erro: erros.join(' | ') };
+}
 function telefoneDoLead(informadoPeloModelo, numeroDoCanal) {
   const doModelo = numeroDiscavel(limparTelefone(informadoPeloModelo));
   if (doModelo) return doModelo.formatado;
@@ -1590,6 +1795,13 @@ app.post('/chat', async (req, res) => {
   // Identificador da conversa do site no historico. O visitante nao tem numero,
   // entao usamos a sessao gerada pelo widget.
   const idConversa = sessionId ? `site-${sessionId}` : 'site-sem-sessao';
+  // No chat do site o historico vem do widget a cada chamada, entao a anotacao
+  // e feita na copia que vai para o modelo. O texto que o visitante ve e o que
+  // vai para a planilha nao mudam.
+  if (Array.isArray(messages)) {
+    const cnpjTorto = anotarCnpjSuspeito(messages);
+    if (cnpjTorto) console.log(`CNPJ a confirmar no chat do site ${idConversa}: ${formatarCnpj(cnpjTorto)}`);
+  }
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -1612,7 +1824,9 @@ app.post('/chat', async (req, res) => {
     try {
       const ultima = Array.isArray(messages) ? messages[messages.length - 1] : null;
       if (ultima && ultima.role === 'user') {
-        registrarConversa(idConversa, 'recebida', ultima.content, 'bot-site');
+        // A nota de CNPJ a confirmar e instrucao interna e nao pode ir para o
+        // historico que o painel mostra. Grava so o que o visitante escreveu.
+        registrarConversa(idConversa, 'recebida', semNotaInterna(ultima.content), 'bot-site');
       }
       const respostaTexto = data.content?.[0]?.text;
       if (respostaTexto) {
@@ -1799,6 +2013,8 @@ app.post('/whatsapp-cloud', async (req, res) => {
     if (historico.length > 20) {
       historico = historico.slice(-20);
     }
+    const cnpjTorto = anotarCnpjSuspeito(historico);
+    if (cnpjTorto) console.log(`CNPJ a confirmar com ${numero}: ${formatarCnpj(cnpjTorto)}`);
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -1895,6 +2111,8 @@ async function atenderCanalMeta(cfg) {
   }
   historico.push({ role: 'user', content: texto });
   if (historico.length > 20) historico = historico.slice(-20);
+  const cnpjTorto = anotarCnpjSuspeito(historico);
+  if (cnpjTorto) console.log(`CNPJ a confirmar com ${chave}: ${formatarCnpj(cnpjTorto)}`);
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -3632,15 +3850,26 @@ app.get('/reprocessar', async (req, res) => {
       parsed.decisaoHumana = true;
     }
     const faltando = camposFaltantes(parsed);
-    const placar = placarCriterios(parsed);
     if (!aplicar) {
+      // A previa mostrava o bloco CRU, do jeito que o modelo devolveu, antes do
+      // saneamento do telefone e antes da trava de classificacao. Quem lia via
+      // uma coisa e recebia outra depois do &aplicar=1. Agora a previa roda as
+      // mesmas correcoes, numa copia, e mostra o resultado de verdade.
+      const copia = JSON.parse(JSON.stringify(parsed));
+      copia.telefone = telefoneDoLead(copia.telefone, /^\d+$/.test(alvo) ? alvo : '');
+      const ajuste = corrigirClassificacaoSeInconsistente(copia);
+      const placarFinal = placarCriterios(copia);
       return res.json({
         modo: 'PRÉVIA, nada foi gravado e nenhum e-mail foi enviado',
         contato: alvo, canal: canalDaChave(alvo),
         mensagensLidas: historico.length,
         classificacaoForcada: forcar || null,
-        blocoQueSeriaGravado: parsed,
-        placar: `${placar.ok}/4`, criterios: placar.detalhe,
+        classificacaoDoAgente: classificacaoNormalizada(parsed),
+        classificacaoFinal: ajuste.classificacao,
+        corrigidaPeloBackend: ajuste.corrigido,
+        volumeAConfirmar: !!copia.volumeAConfirmar,
+        blocoQueSeriaGravado: copia,
+        placar: `${placarFinal.ok}/4`, criterios: placarFinal.detalhe,
         camposFaltantes: faltando,
         comoAplicar: 'acrescente &aplicar=1 no endereço',
         oQueAcontece: 'Grava classificação, motivo e dados cadastrais na linha do contato, ' +
@@ -3660,13 +3889,15 @@ app.get('/reprocessar', async (req, res) => {
       catch(e) { erroEmail = e.message; }
     }
     console.log(`Reprocessamento de ${alvo}: ${classificacaoNormalizada(parsed)}, e-mail ${emailEnviado ? 'enviado' : 'NÃO enviado'}`);
+    const placarAplicado = placarCriterios(parsed);
     res.json({
       modo: 'APLICADO', contato: alvo,
       classificacao: classificacaoNormalizada(parsed),
       classificacaoForcada: forcar || null,
-      placar: `${placar.ok}/4`, camposFaltantes: faltando,
+      volumeAConfirmar: !!parsed.volumeAConfirmar,
+      placar: `${placarAplicado.ok}/4`, camposFaltantes: faltando,
       gravadoNaPlanilha: !!lead, emailEnviado, erroEmail,
-      destinatarios: lead ? destinoDoEmail(lead, placar).para : [],
+      destinatarios: lead ? destinoDoEmail(lead, placarAplicado).para : [],
       bloco: parsed
     });
   } catch(e) {
@@ -4049,6 +4280,28 @@ app.post('/lead', async (req, res) => {
   }
 });
 // ── ROTA: TESTAR REDIS (debug)
+// ══════════════════════════════════════════════════════════════
+// ── ROTA: CONFERIR A CONSULTA DE CNPJ
+// ══════════════════════════════════════════════════════════════
+// Mostra o que a consulta entendeu e, ao lado, a resposta crua da fonte. Serve
+// para conferir os nomes de campo contra a realidade: se amanha a API renomear
+// algo, o campo aparece vazio no "normalizado" e presente no "cru", e o ajuste
+// fica obvio. Ignora o cache de proposito, para testar a fonte de verdade.
+app.get('/cnpj-test', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const cnpj = (req.query.cnpj || '').trim();
+  if (!cnpj) return res.status(400).json({ erro: 'informe &cnpj=00000000000000' });
+  const r = await consultarCnpj(cnpj, { comCru: true });
+  const { cru, ...normalizado } = r;
+  res.json({
+    digitoVerificador: r.digitoOk ? 'fecha' : 'NÃO FECHA, número inconsistente',
+    normalizado,
+    camposVaziosNoNormalizado: Object.entries(normalizado)
+      .filter(([k, v]) => v === '' || (v && typeof v === 'object' && !Array.isArray(v) && !v.codigo && !v.descricao))
+      .map(([k]) => k),
+    respostaCrua: cru || null
+  });
+});
 app.get('/redis-test', async (req, res) => {
   try {
     const testKey = 'ginger_test_' + Date.now();
@@ -4318,6 +4571,9 @@ async function enviarEmailLead(lead, numero = null) {
       o agente não conseguiu uma estimativa, e ele NÃO foi rebaixado por isso.
       Pode ser um cliente grande que só não sabe traduzir a necessidade em quilos.
       A conversa sobre quantidade é com você.
+      <br><br>Se o agente chegou a mencionar as revendas parceiras na conversa, foi
+      por causa desse mesmo critério. Vale confirmar o volume antes de tratar como
+      caso de revenda.
     </div>` : '';
   const avisoPromessa = lead.promessaDeEspecialistaPendente ? `
     <div style="border-left:4px solid #C0392B;background:#FDECEA;padding:12px 14px;margin:0 0 14px">
@@ -4347,6 +4603,32 @@ async function enviarEmailLead(lead, numero = null) {
         ? `${doCanal.formatado} — <a href="${doCanal.wa}">abrir conversa</a>`
         : numero}</p>`
     : '';
+  // ── CADASTRO NA RECEITA
+  // A consulta acontece AQUI, e nao na hora de tratar o bloco, para nao somar
+  // tempo de rede ao tempo de resposta ao lead. A essa altura a mensagem dele
+  // ja foi respondida e o unico que espera e o e-mail.
+  const receita = lead.cnpj ? await consultarCnpj(lead.cnpj) : null;
+  const linhaReceita = (rotulo, valor) => valor
+    ? `<tr><td><b>${rotulo}</b></td><td>${valor}</td></tr>` : '';
+  const blocoReceita = !receita ? '' : (receita.ok ? `
+      <tr style="background:#F2EAF7"><td colspan="2"><b>CADASTRO NA RECEITA</b>
+        <span style="font-weight:normal;color:#555">— consulta automática, ${receita.fonte}${receita.cache ? ', em cache' : ''}</span></td></tr>
+      ${linhaReceita('Razão social', receita.razaoSocial)}
+      ${linhaReceita('Nome fantasia', receita.nomeFantasia)}
+      <tr><td><b>CNAE principal</b></td><td style="background:#FEF6E7"><b>${receita.cnaePrincipal.codigo || '-'}</b> ${receita.cnaePrincipal.descricao || ''}</td></tr>
+      ${receita.cnaesSecundarios.length ? `<tr><td><b>CNAEs secundários</b></td><td>${
+        receita.cnaesSecundarios.map(c => `${c.codigo} ${c.descricao}`).join('<br>')}</td></tr>` : ''}
+      ${linhaReceita('Situação cadastral', `${receita.situacao}${/ativa/i.test(receita.situacao) ? '' : ' ⚠️'}`)}
+      ${linhaReceita('Porte', receita.porte)}
+      ${linhaReceita('Natureza jurídica', receita.naturezaJuridica)}
+      ${linhaReceita('Início de atividade', receita.abertura)}
+      ${linhaReceita('Município', [receita.municipio, receita.uf].filter(Boolean).join(' / '))}` : `
+      <tr style="background:#F2EAF7"><td colspan="2"><b>CADASTRO NA RECEITA</b></td></tr>
+      <tr><td><b>Consulta</b></td><td style="color:${receita.digitoOk ? '#B7791F' : '#C0392B'}">
+        ${receita.digitoOk
+          ? `não foi possível consultar agora (${receita.erro}). Vale conferir na mão.`
+          : `<b>CNPJ inconsistente:</b> ${receita.erro}. Confirme o número com o contato antes de ligar.`}
+      </td></tr>`);
   const doLead = numeroDiscavel(limparTelefone(lead.telefone));
   const celulaTelefone = lead.telefone
     ? (doLead ? `${lead.telefone} — <a href="${doLead.wa}">WhatsApp</a>` : lead.telefone)
@@ -4370,7 +4652,7 @@ async function enviarEmailLead(lead, numero = null) {
       <tr><td><b>Nome</b></td><td>${lead.nome || '-'}</td></tr>
       <tr><td><b>Cargo</b></td><td>${lead.cargo || '-'}</td></tr>
       <tr><td><b>Empresa</b></td><td>${lead.empresa || '-'}</td></tr>
-      <tr><td><b>CNPJ</b></td><td>${lead.cnpj || '-'}</td></tr>
+      <tr><td><b>CNPJ</b></td><td>${lead.cnpj ? formatarCnpj(lead.cnpj) : '-'}</td></tr>
       <tr><td><b>Email</b></td><td>${lead.email || '-'}</td></tr>
       <tr><td><b>Telefone</b></td><td>${celulaTelefone}</td></tr>
       <tr><td><b>Funcionários</b></td><td>${lead.funcionarios || '-'}</td></tr>
@@ -4378,7 +4660,9 @@ async function enviarEmailLead(lead, numero = null) {
       <tr><td><b>Fornecedor Atual</b></td><td>${lead.fornecedor_atual || '-'}</td></tr>
       <tr><td><b>Volume Mensal</b></td><td>${lead.volume_mensal || '-'}</td></tr>
       <tr><td><b>Projeto</b></td><td>${lead.projeto || '-'}</td></tr>
+      ${blocoReceita}
     </table>
+    ${receita && receita.ok ? `<p style="color:#555;font-size:12px">O CNAE acima é informação de apoio para a especialista. O agente não usa ramo de atividade para classificar o lead e não comenta isso com o contato.</p>` : ''}
     <p style="color:#47166B;font-size:13px"><b>Ao abrir o projeto no Otimizah, anote o número do projeto na coluna PROJETO da planilha LEADS GINGER.</b> É o que permite medir o retorno dos leads da internet.</p>
     <p style="color:#888;font-size:12px">Gerado automaticamente pelo Agente Ginger</p>
   `;

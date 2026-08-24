@@ -1678,15 +1678,50 @@ function normalizarParaBusca(texto) {
 }
 // Palavra inteira, nao pedaco. "quero" nao casa dentro de "querosene", e o
 // acento e o emoji do comentario nao impedem o casamento.
-function comentarioCasaPalavra(texto, palavras) {
-  const limpo = ' ' + normalizarParaBusca(texto) + ' ';
+// Dois modos, e a diferenca decide se o gancho e util ou constrangedor.
+//
+// "exata": o comentario TEM QUE SER so a palavra. "Ginger" casa. "Maravilhosas
+// Fragrancias Ginger" nao casa, porque aquilo e elogio, nao pedido de contato,
+// e mandar proposta comercial para quem elogiou queima a marca. Emoji, acento e
+// pontuacao nao atrapalham: "Ginger!!! 🧡" continua sendo so a palavra.
+//
+// "contem": basta a palavra aparecer inteira em qualquer lugar da frase. Serve
+// para post que pede uma expressao dentro de uma frase, e e o modo antigo.
+//
+// O padrao e "exata", que e a regra que o Pedro deu: se o cara comentar SO
+// "Ginger", o agente aborda.
+function comentarioCasaPalavra(texto, palavras, modo) {
+  const limpo = normalizarParaBusca(texto);
+  if (!limpo) return null;
+  const exata = modo !== 'contem';
   for (const p of palavras || []) {
     const alvo = normalizarParaBusca(p);
     if (!alvo) continue;
-    if (limpo.includes(' ' + alvo + ' ')) return alvo;
+    if (exata) { if (limpo === alvo) return alvo; }
+    else if ((' ' + limpo + ' ').includes(' ' + alvo + ' ')) return alvo;
   }
   return null;
 }
+// ── A CAMPANHA PADRÃO
+// O gancho nasceu por post, e continua podendo ser por post: campanha cadastrada
+// num post especifico ganha da padrao. Mas exigir cadastro em cada publicacao
+// significava que todo post novo saia com o convite na legenda e sem ninguem do
+// outro lado, que foi exatamente o que aconteceu no post de 24/08.
+// Agora existe um piso: qualquer post da conta, sem cadastro nenhum, responde a
+// quem comenta so "Ginger".
+const GANCHO_PADRAO = {
+  palavras: ['ginger'],
+  modo: 'exata',
+  direto:
+    'Oi! Aqui é a Ginger, vi seu comentário no post.\n\n' +
+    'Você comentou pedindo contato, então já te chamo por aqui. A gente desenvolve ' +
+    'fragrância sob medida para indústria, e o caminho começa entendendo o seu produto.\n\n' +
+    'Para eu te direcionar do jeito certo, me conta uma coisa rápida: é para um produto ' +
+    'da sua empresa ou para uso pessoal?',
+  publico: 'Te chamamos no direto! Se não aparecer, dá uma olhada nos seus pedidos de mensagem.',
+  contexto: 'A pessoa comentou a palavra combinada em um post da Ginger, respondendo ao convite da legenda.',
+  padrao: true
+};
 async function salvarCampanha(mediaId, dados) {
   await redis('SET', `campanha:${mediaId}`, JSON.stringify(dados));
   await redis('SADD', 'campanhas:index', mediaId);
@@ -1695,6 +1730,12 @@ async function lerCampanha(mediaId) {
   const bruto = await redis('GET', `campanha:${mediaId}`);
   if (!bruto) return null;
   try { return JSON.parse(bruto); } catch(e) { return null; }
+}
+// A campanha que vale para um post: a especifica dele, se existir, senao a
+// padrao. Um unico lugar decide isso, para o webhook e a varredura nunca
+// discordarem sobre o que deveria ter acontecido.
+async function campanhaVigente(mediaId) {
+  return (await lerCampanha(mediaId)) || GANCHO_PADRAO;
 }
 async function listarCampanhas() {
   const ids = await redis('SMEMBERS', 'campanhas:index');
@@ -1751,9 +1792,9 @@ async function tratarComentarioInstagram(valor) {
     console.log('Comentário já tratado, ignorando:', comentarioId);
     return;
   }
-  const campanha = await lerCampanha(mediaId);
+  const campanha = await campanhaVigente(mediaId);
   if (!campanha) return;
-  const palavra = comentarioCasaPalavra(texto, campanha.palavras);
+  const palavra = comentarioCasaPalavra(texto, campanha.palavras, campanha.modo);
   if (!palavra) return;
   if (!autor.id) {
     console.log(`Comentário com a palavra "${palavra}" mas sem autor identificável, não dá para chamar no direto`);
@@ -1831,7 +1872,7 @@ async function lerComentariosDoPost(mediaId, campanha) {
     const autor = c.from || {};
     const usuario = autor.username || c.username || '';
     if (autor.id && IG_USER_ID && String(autor.id) === String(IG_USER_ID)) continue;
-    const palavra = comentarioCasaPalavra(c.text, campanha.palavras);
+    const palavra = comentarioCasaPalavra(c.text, campanha.palavras, campanha.modo);
     const idade = c.timestamp ? (agora - new Date(c.timestamp).getTime()) : null;
     let situacao;
     if (!palavra) situacao = 'não casou com nenhuma palavra da campanha';
@@ -3002,6 +3043,8 @@ app.get('/posts', async (req, res) => {
         link: m.permalink,
         legenda: String(m.caption || '').replace(/\s+/g, ' ').substring(0, 110)
       })),
+      ganchoPadrao: { palavras: GANCHO_PADRAO.palavras, modo: 'o comentário tem que ser só a palavra',
+        observacao: 'Vale para TODO post que não tenha campanha própria. Cadastrar uma campanha no post substitui o padrão.' },
       comoCadastrar: '/gancho-criar?chave=...&post=<mediaId>&palavras=ginger&direto=...&aplicar=1'
     });
   } catch(e) { res.status(500).json({ erro: e.message }); }
@@ -3026,11 +3069,7 @@ app.get('/gancho-varrer', async (req, res) => {
       mediaId = achado.mediaId;
     }
     if (!mediaId) return res.status(400).json({ erro: 'informe &post=<mediaId> ou &link=<endereço do post>. Veja os dois em /posts' });
-    const campanha = await lerCampanha(mediaId);
-    if (!campanha) return res.status(404).json({
-      erro: 'esse post não tem campanha cadastrada, e a varredura usa as palavras da campanha',
-      comoResolver: 'cadastre primeiro em /gancho-criar, depois volte aqui'
-    });
+    const campanha = await campanhaVigente(mediaId);
     const leitura = await lerComentariosDoPost(mediaId, campanha);
     if (leitura.erro) return res.status(502).json(leitura);
     const linhas = leitura.linhas;
@@ -3040,6 +3079,8 @@ app.get('/gancho-varrer', async (req, res) => {
       return res.json({
         modo: 'PRÉVIA, ninguém recebeu nada',
         post: mediaId, palavrasDaCampanha: campanha.palavras,
+        campanha: campanha.padrao ? 'padrão (nenhuma cadastrada neste post)' : 'cadastrada neste post',
+        modo: campanha.modo === 'contem' ? 'a palavra em qualquer lugar da frase' : 'o comentário tem que ser só a palavra',
         comentariosLidos: linhas.length, seriamChamados: chamaveis.length,
         comentarios: linhas.map(limpar),
         comoAplicar: 'acrescente &aplicar=1 no endereço'

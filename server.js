@@ -1759,19 +1759,30 @@ async function tratarComentarioInstagram(valor) {
     console.log(`Comentário com a palavra "${palavra}" mas sem autor identificável, não dá para chamar no direto`);
     return;
   }
+  await dispararGancho(campanha, mediaId, comentarioId, autor, palavra);
+}
+// O disparo em si, separado do webhook de proposito: o webhook chama isto
+// quando o comentario chega na hora, e a varredura chama isto para os
+// comentarios que ficaram para tras. Mesma regra nos dois caminhos, senao o
+// resgate se comporta diferente do fluxo normal.
+async function dispararGancho(campanha, mediaId, comentarioId, autor, palavra) {
   // Uma pessoa, uma campanha, um direct. Quem comenta cinco vezes no mesmo post
   // nao recebe cinco mensagens.
   const jaChamado = await redis('SET', `gancho:${mediaId}:${autor.id}`, '1', 'NX', 'EX', 2592000);
   if (jaChamado !== 'OK') {
     console.log(`Autor ${autor.username || autor.id} já foi chamado nesta campanha, só respondo em público`);
     if (campanha.publico) await responderComentarioEmPublico(comentarioId, campanha.publico);
-    return;
+    return { ok: false, motivo: 'ja_chamado_antes', autor: autor.username || autor.id };
   }
   console.log(`Gancho disparado: "${palavra}" por ${autor.username || autor.id} no post ${mediaId}`);
   const envio = await responderComentarioNoDireto(comentarioId, campanha.direto);
   if (!envio.ok) {
     console.error('Falha ao chamar no direto:', JSON.stringify(envio.data).substring(0, 400));
-    return;
+    // Solta a trava. Sem isto a pessoa fica marcada como chamada sem ter
+    // recebido nada, e nunca mais entra numa nova tentativa.
+    await redis('DEL', `gancho:${mediaId}:${autor.id}`);
+    return { ok: false, motivo: 'falha_no_direto', autor: autor.username || autor.id,
+             detalhe: JSON.stringify(envio.data).substring(0, 300) };
   }
   const chave = chaveInstagram(autor.id);
   await garantirLinhaDoContato({
@@ -1802,6 +1813,36 @@ async function tratarComentarioInstagram(valor) {
     if (!pub.ok) console.log('Resposta pública falhou:', JSON.stringify(pub.data).substring(0, 300));
   }
   await redis('INCR', `gancho:contagem:${mediaId}`);
+  return { ok: true, autor: autor.username || autor.id, palavra };
+}
+// A Meta deixa responder um comentario no direto durante 7 dias. Depois disso a
+// porta fecha e so a propria pessoa pode reabrir escrevendo primeiro.
+const PRAZO_RESPOSTA_COMENTARIO_MS = 7 * 24 * 60 * 60 * 1000;
+// Le os comentarios de um post e devolve o que a campanha faria com cada um.
+// Serve para a previa e para a varredura, com o mesmo criterio.
+async function lerComentariosDoPost(mediaId, campanha) {
+  const r = await chamarInstagram(
+    `/${mediaId}/comments?fields=id,text,timestamp,username,from{id,username}&limit=100`);
+  if (!r.ok) return { erro: 'não consegui ler os comentários do post', detalhe: r.data };
+  const agora = Date.now();
+  const linhas = [];
+  for (const c of (r.data.data || [])) {
+    const autor = c.from || {};
+    const usuario = autor.username || c.username || '';
+    if (autor.id && IG_USER_ID && String(autor.id) === String(IG_USER_ID)) continue;
+    const palavra = comentarioCasaPalavra(c.text, campanha.palavras);
+    const idade = c.timestamp ? (agora - new Date(c.timestamp).getTime()) : null;
+    let situacao;
+    if (!palavra) situacao = 'não casou com nenhuma palavra da campanha';
+    else if (!autor.id) situacao = 'casou, mas o Instagram não devolveu o id do autor';
+    else if (idade !== null && idade > PRAZO_RESPOSTA_COMENTARIO_MS) situacao = 'casou, mas passou dos 7 dias';
+    else if (await redis('GET', `gancho:${mediaId}:${autor.id}`)) situacao = 'casou, mas essa pessoa já foi chamada';
+    else situacao = 'PODE CHAMAR';
+    linhas.push({ comentarioId: c.id, usuario: usuario ? '@' + usuario : '(sem usuário)',
+                  texto: String(c.text || '').substring(0, 120), quando: c.timestamp || '',
+                  palavra: palavra || '', situacao, _autor: autor });
+  }
+  return { linhas };
 }
 async function enviarInstagram(igsid, texto) {
   if (!IG_USER_ID || !(await tokenInstagram())) {
@@ -2888,6 +2929,116 @@ app.get('/gancho-remover', async (req, res) => {
   await redis('SREM', 'campanhas:index', mediaId);
   console.log(`Gancho removido do post ${mediaId}`);
   res.json({ modo: 'REMOVIDO', post: mediaId });
+});
+// ── ROTA: /posts
+// Lista os posts recentes com o endereco e quantos comentarios cada um tem.
+// Existe porque o gancho e por post e o identificador da midia nao aparece em
+// lugar nenhum no aplicativo. Sem esta rota o cadastro depende de copiar o link
+// da barra do navegador, o que no celular nem sempre da.
+app.get('/posts', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  try {
+    const r = await chamarInstagram(
+      `/${IG_USER_ID}/media?fields=id,permalink,caption,timestamp,comments_count,media_type&limit=${Math.min(parseInt(req.query.max || '15', 10) || 15, 50)}`);
+    if (!r.ok) return res.status(502).json({ erro: 'não consegui listar os posts', detalhe: r.data });
+    const campanhas = await listarCampanhas();
+    const comGancho = new Set(campanhas.map(c => String(c.mediaId)));
+    res.json({
+      posts: (r.data.data || []).map(m => ({
+        mediaId: m.id, quando: m.timestamp, tipo: m.media_type,
+        comentarios: m.comments_count ?? null,
+        temGanchoCadastrado: comGancho.has(String(m.id)),
+        link: m.permalink,
+        legenda: String(m.caption || '').replace(/\s+/g, ' ').substring(0, 110)
+      })),
+      comoCadastrar: '/gancho-criar?chave=...&post=<mediaId>&palavras=ginger&direto=...&aplicar=1'
+    });
+  } catch(e) { res.status(500).json({ erro: e.message }); }
+});
+// ── ROTA: /gancho-varrer
+// O gancho normal e ao vivo: o comentario chega pelo webhook e o direct sai na
+// hora. Se a campanha foi cadastrada depois do post publicado, ou se o webhook
+// estava desligado, quem comentou antes fica sem resposta e ninguem percebe,
+// porque do lado de fora parece so um comentario sem retorno.
+// Esta rota varre os comentarios que ja estao no post e chama quem ficou para
+// tras, respeitando os mesmos 7 dias da Meta e a mesma trava de uma pessoa por
+// campanha. Sem &aplicar=1 e so previa, ninguem recebe nada.
+app.get('/gancho-varrer', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const aplicar = req.query.aplicar === '1';
+  let mediaId = (req.query.post || '').trim();
+  const link = (req.query.link || '').trim();
+  try {
+    if (!mediaId && link) {
+      const achado = await resolverPostPorLink(link);
+      if (achado.erro) return res.status(404).json(achado);
+      mediaId = achado.mediaId;
+    }
+    if (!mediaId) return res.status(400).json({ erro: 'informe &post=<mediaId> ou &link=<endereço do post>. Veja os dois em /posts' });
+    const campanha = await lerCampanha(mediaId);
+    if (!campanha) return res.status(404).json({
+      erro: 'esse post não tem campanha cadastrada, e a varredura usa as palavras da campanha',
+      comoResolver: 'cadastre primeiro em /gancho-criar, depois volte aqui'
+    });
+    const leitura = await lerComentariosDoPost(mediaId, campanha);
+    if (leitura.erro) return res.status(502).json(leitura);
+    const linhas = leitura.linhas;
+    const chamaveis = linhas.filter(l => l.situacao === 'PODE CHAMAR');
+    const limpar = l => { const { _autor, ...resto } = l; return resto; };
+    if (!aplicar) {
+      return res.json({
+        modo: 'PRÉVIA, ninguém recebeu nada',
+        post: mediaId, palavrasDaCampanha: campanha.palavras,
+        comentariosLidos: linhas.length, seriamChamados: chamaveis.length,
+        comentarios: linhas.map(limpar),
+        comoAplicar: 'acrescente &aplicar=1 no endereço'
+      });
+    }
+    const resultados = [];
+    for (const l of chamaveis) {
+      const r = await dispararGancho(campanha, mediaId, l.comentarioId, l._autor, l.palavra);
+      resultados.push({ usuario: l.usuario, ...r });
+    }
+    res.json({
+      modo: 'APLICADO', post: mediaId,
+      chamados: resultados.filter(r => r.ok).length,
+      falhas: resultados.filter(r => !r.ok).length,
+      resultados
+    });
+  } catch(e) {
+    console.error('Erro na varredura de gancho:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+// ── ROTA: /instagram-webhook
+// O gancho depende de o app estar inscrito no campo "comments" da conta. Se so
+// "messages" estiver ligado, a campanha fica cadastrada, o post convida a
+// comentar, a pessoa comenta e nao acontece nada: o webhook nunca e avisado.
+// Com &assinar=1 a rota inscreve os dois campos.
+app.get('/instagram-webhook', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  try {
+    if (req.query.assinar === '1') {
+      const campos = (req.query.campos || 'messages,comments').trim();
+      const post = await chamarInstagram(
+        `/${IG_USER_ID}/subscribed_apps?subscribed_fields=${encodeURIComponent(campos)}`, { method: 'POST' });
+      console.log('Assinatura de webhook do Instagram:', JSON.stringify(post.data));
+      const dep = await chamarInstagram(`/${IG_USER_ID}/subscribed_apps`);
+      return res.json({ modo: 'ASSINADO', pedido: campos, resposta: post.data, agora: dep.data });
+    }
+    const r = await chamarInstagram(`/${IG_USER_ID}/subscribed_apps`);
+    if (!r.ok) return res.status(502).json({ erro: 'não consegui ler a assinatura', detalhe: r.data });
+    const campos = ((r.data.data || [])[0] || {}).subscribed_fields || [];
+    res.json({
+      camposAssinados: campos,
+      recebeMensagens: campos.includes('messages'),
+      recebeComentarios: campos.includes('comments'),
+      diagnostico: campos.includes('comments')
+        ? 'O campo de comentários está ligado. O gancho dispara ao vivo.'
+        : 'O campo de comentários NÃO está ligado. Nenhum gancho vai disparar sozinho — só a varredura manual funciona.',
+      comoLigar: '/instagram-webhook?chave=...&assinar=1'
+    });
+  } catch(e) { res.status(500).json({ erro: e.message }); }
 });
 app.get('/instagram-status', async (req, res) => {
   if (!exigeChave(req, res)) return;

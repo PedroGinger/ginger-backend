@@ -1784,6 +1784,7 @@ async function dispararGancho(campanha, mediaId, comentarioId, autor, palavra) {
     return { ok: false, motivo: 'falha_no_direto', autor: autor.username || autor.id,
              detalhe: JSON.stringify(envio.data).substring(0, 300) };
   }
+  await marcarEnvioProprio(envio.data && envio.data.message_id);
   const chave = chaveInstagram(autor.id);
   await garantirLinhaDoContato({
     idCanal: chave, telefone: '',
@@ -1866,6 +1867,7 @@ async function enviarInstagram(igsid, texto) {
       }
       return { ok: false, data: r.data };
     }
+    await marcarEnvioProprio(r.data && r.data.message_id);
     return { ok: true, data: r.data };
   } catch(e) {
     console.error('Falha de rede ao enviar no Instagram:', e.message);
@@ -1915,6 +1917,7 @@ async function enviarFacebook(psid, texto) {
       }
       return { ok: false, data: r.data };
     }
+    await marcarEnvioProprio(r.data && r.data.message_id);
     return { ok: true, data: r.data };
   } catch(e) {
     console.error('Falha de rede ao enviar no Messenger:', e.message);
@@ -2623,13 +2626,53 @@ function eventoDeMensagem(body, idDaConta) {
   const ev = body?.entry?.[0]?.messaging?.[0];
   if (!ev || !ev.message) return null;
   // ECHO: a Meta devolve para o webhook TODA mensagem que a propria conta
-  // envia. Sem esta trava o bot le a propria resposta como se fosse do
-  // contato e conversa sozinho, em loop, gastando credito da Anthropic.
-  if (ev.message.is_echo) return null;
+  // envia, inclusive as que uma pessoa escreveu a mao pelo aplicativo.
+  // O bot NUNCA responde a um eco, senao le a propria resposta como se fosse do
+  // contato e conversa sozinho, em loop, gastando credito da Anthropic. Mas
+  // tambem nao pode ignorar: quando o eco e de uma mensagem humana, ele e a
+  // unica forma de o agente saber o que ja foi dito naquela conversa.
+  // No eco os papeis se invertem: quem envia e a conta, e o contato e o
+  // destinatario.
+  if (ev.message.is_echo) {
+    const destino = ev.recipient && ev.recipient.id;
+    if (!destino) return null;
+    return { ehEco: true, psid: destino, mid: ev.message.mid, texto: ev.message.text };
+  }
   const psid = ev.sender && ev.sender.id;
   if (!psid) return null;
   if (idDaConta && String(psid) === String(idDaConta)) return null;
   return { psid, mid: ev.message.mid, texto: ev.message.text, mensagem: ev.message };
+}
+// Marca uma mensagem que o proprio backend acabou de enviar, para reconhecer o
+// eco dela minutos depois. Sem isto o eco da resposta do bot entraria no
+// historico duas vezes.
+async function marcarEnvioProprio(idDaMensagem) {
+  if (!idDaMensagem) return;
+  await redis('SET', `envio:${idDaMensagem}`, '1', 'EX', 86400);
+}
+const NOTA_MENSAGEM_MANUAL =
+  '[CONTEXTO INTERNO — não mencionar esta nota ao contato] A mensagem a seguir foi ' +
+  'escrita à mão por uma pessoa da Ginger, não por você. Ela faz parte desta conversa e ' +
+  'o contato já a leu. Continue de onde ela parou: não se apresente de novo, não repita ' +
+  'o que ela já disse e não pergunte algo que ela já perguntou. Siga a régua normal ' +
+  'daí em diante.';
+// Registra no historico o que um humano escreveu a mao pelo aplicativo, para o
+// agente continuar a conversa sabendo o que ja foi dito. Nao responde nada.
+async function registrarMensagemManual(chave, texto, mid, canal) {
+  if (!texto || !texto.trim()) return;
+  if (mid && await redis('GET', `envio:${mid}`)) return;   // eco do proprio bot
+  const historico = await getConversaChave(chave) || [];
+  const ultima = historico[historico.length - 1];
+  if (ultima && ultima.role === 'assistant' && ultima.content === texto) return;
+  const anterior = historico[historico.length - 2];
+  const jaAvisado = anterior && anterior.role === 'user' &&
+                    String(anterior.content || '').startsWith(NOTA_MENSAGEM_MANUAL.substring(0, 40));
+  const novo = jaAvisado
+    ? [...historico, { role: 'assistant', content: texto }]
+    : [...historico, { role: 'user', content: NOTA_MENSAGEM_MANUAL }, { role: 'assistant', content: texto }];
+  await saveConversaChave(chave, novo.slice(-20));
+  await registrarConversa(chave, 'enviada', texto, `humano-${canal}`);
+  console.log(`Mensagem manual registrada no ${canal} para ${chave}: ${texto.substring(0, 80)}`);
 }
 const NOTA_INSTAGRAM =
   'Esta conversa chegou pelo Instagram Direct da Ginger. O público do Instagram é ' +
@@ -2675,6 +2718,10 @@ app.post('/instagram', async (req, res) => {
       console.log('Evento de Instagram duplicado ignorado:', ev.mid);
       return;
     }
+    if (ev.ehEco) {
+      await registrarMensagemManual(chaveInstagram(ev.psid), ev.texto, ev.mid, 'instagram');
+      return;
+    }
     if (!ev.texto || !ev.texto.trim()) {
       if (ev.mensagem.attachments || ev.mensagem.is_unsupported) {
         console.log('Mídia recebida no Instagram de', ev.psid);
@@ -2714,6 +2761,10 @@ app.post('/facebook', async (req, res) => {
     if (!ev) return;
     if (await jaProcessouMensagem(ev.mid)) {
       console.log('Evento do Messenger duplicado ignorado:', ev.mid);
+      return;
+    }
+    if (ev.ehEco) {
+      await registrarMensagemManual(chaveFacebook(ev.psid), ev.texto, ev.mid, 'facebook');
       return;
     }
     if (!ev.texto || !ev.texto.trim()) {

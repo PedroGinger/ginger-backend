@@ -752,6 +752,7 @@ DEGRAU 2, se a resposta for "não sei", "nem noção", "não faço ideia" ou equ
 DEGRAU 3, se ainda assim não vier número nenhum. Ofereça faixas para a pessoa só escolher, porque escolher é muito mais fácil do que calcular: "Só para eu te direcionar certo: você diria que fica abaixo de 3 kg por mês, entre 3 e 10 kg, ou acima disso?" Vale a mesma pergunta em reais.
 SÓ DEPOIS DOS TRÊS DEGRAUS, se a pessoa continuar sem conseguir dar nem uma faixa, o volume dela é pequeno e o caminho dela é a revenda. Aí você NÃO promete especialista, explica com cordialidade que para quantidades pequenas o atendimento é pelas revendas parceiras, indica até três adequadas ao estado dela, e classifica POTENCIAL_FUTURO com criterio_volume "NAO_ESTIMOU".
 Se a pessoa der qualquer estimativa, mesmo grosseira, mesmo em faixa, ela conta. Estimativa acima do mínimo é criterio_volume "OK". Estimativa abaixo do mínimo é "ABAIXO", e aí sim são as revendas.
+TETO NÃO É PISO, e este erro já passou. Os 3 kg por fragrância por pedido e os R$5 mil por mês são PISO, o chão do que a Ginger atende. Quando a pessoa responde com teto — "até 3 kg", "no máximo 2 kg", "não passa de R$ 5 mil", "menos de 3 quilos" — ela NÃO atendeu o mínimo: ela disse que fica por baixo dele. Não conte o número como se atendesse. Faça UMA pergunta de confirmação, direta e sem cobrança: "Só para eu não errar o direcionamento: por fragrância, em cada pedido, você fica em torno de 3 kg ou acima disso?". Se a resposta confirmar que fica abaixo, ou vier outro teto, criterio_volume é "ABAIXO" e o caminho dela é a revenda, com cordialidade. Caso real de 25/08: um lead de velas saiu como BOM com "Até 3 kg" no campo de volume e foi para o comercial errado.
 Nunca desconte o lead pela pergunta que VOCÊ não fez. Se você não subiu os três degraus, marque criterio_volume "NAO_ESTIMOU" e volume_insistido "nao", com honestidade. O sistema trata esse caso, e mentir aqui faz o comercial ligar para a pessoa errada.
 
 ⚠️ PACOTE DE TOM — REGRAS QUE VIERAM DA LEITURA DE 35 CONVERSAS REAIS ⚠️
@@ -909,11 +910,52 @@ function validarLead(parsed) {
 // Blocos antigos so sabem dizer FALHOU. Para eles vale o desempate pelo campo
 // volume_mensal: se tem numero escrito ali, foi ABAIXO; se esta vazio, ninguem
 // estimou nada.
+// ── TETO NÃO É PISO
+// O minimo da Ginger e 3 kg por fragrancia por pedido, ou R$5 mil por mes. Isso
+// e um PISO. "3 kg" atende; "ate 3 kg" quer dizer "no maximo 3", ou seja, a
+// faixa inteira encosta no minimo por baixo e so o topo dela atende.
+// O modelo casou o numero e ignorou a palavra: em 25/08 um lead de velas, MEI de
+// Campinas, saiu como BOM com "Até 3 kg" no campo de volume e foi para o
+// comercial. O criterio de volume era o unico dos quatro sem trava de
+// coerencia no servidor; agora tem.
+const MIN_KG = 3, MIN_REAIS = 5000;
+const MARCAS_DE_TETO =
+  /\b(ate|no maximo|maximo de|no max|menos de|menor que|abaixo de|nao mais que|nao passa de|no limite de)\b/;
+function semAcento(t) {
+  return String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+// Devolve o motivo do rebaixamento, ou null quando nao ha o que rebaixar.
+// Na duvida devolve null: nao rebaixa lead bom por texto que nao deu para ler.
+function volumeEhTetoAbaixoDoMinimo(textoBruto) {
+  const t = semAcento(textoBruto).replace(/\s+/g, ' ').trim();
+  if (!t || !MARCAS_DE_TETO.test(t)) return null;
+  const num = s => parseFloat(String(s).replace(/\./g, '').replace(',', '.'));
+  let kg = null, reais = null;
+  let m;
+  const reKg = /(\d+(?:[.,]\d+)?)\s*(?:kg|quilos?|kilos?)\b/g;
+  while ((m = reKg.exec(t))) kg = Math.max(kg ?? 0, num(m[1]));
+  const reG = /(\d+(?:[.,]\d+)?)\s*(?:g|gr|gramas?)\b/g;
+  while ((m = reG.exec(t))) kg = Math.max(kg ?? 0, num(m[1]) / 1000);
+  const reMil = /(?:r\$\s*)?(\d+(?:[.,]\d+)?)\s*mil\b/g;
+  while ((m = reMil.exec(t))) reais = Math.max(reais ?? 0, num(m[1]) * 1000);
+  const reReais = /r\$\s*(\d+(?:[.,]\d+)?)(?!\s*mil)/g;
+  while ((m = reReais.exec(t))) reais = Math.max(reais ?? 0, num(m[1]));
+  if (kg !== null && kg <= MIN_KG) return `volume declarado como teto de ${kg} kg, e o mínimo é ${MIN_KG} kg por fragrância por pedido`;
+  if (reais !== null && reais <= MIN_REAIS) return `volume declarado como teto de R$ ${reais.toLocaleString('pt-BR')}, e o mínimo é R$ ${MIN_REAIS.toLocaleString('pt-BR')} por mês`;
+  return null;
+}
 function estadoDoVolume(lead) {
   const v = String(lead.criterio_volume || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
   const declarado = String(lead.volume_mensal || '').trim();
   const temNumero = declarado && declarado !== '-' && /\d/.test(declarado);
-  if (v === 'OK') return 'OK';
+  if (v === 'OK') {
+    const motivo = volumeEhTetoAbaixoDoMinimo(declarado);
+    if (motivo) {
+      console.log(`Volume rebaixado de OK para ABAIXO: ${motivo} ("${declarado}")`);
+      return 'ABAIXO';
+    }
+    return 'OK';
+  }
   if (v === 'ABAIXO' || v === 'ABAIXO_DO_MINIMO') return 'ABAIXO';
   if (v === 'NAO_ESTIMOU' || v === 'NÃO_ESTIMOU' || v === 'NAO_INFORMADO' || v === 'NÃO_INFORMADO') return 'NAO_ESTIMOU';
   if (v === 'FALHOU') return temNumero ? 'ABAIXO' : 'NAO_ESTIMOU';

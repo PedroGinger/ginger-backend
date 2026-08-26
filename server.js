@@ -758,6 +758,8 @@ Nunca desconte o lead pela pergunta que VOCÊ não fez. Se você não subiu os t
 ⚠️ PACOTE DE TOM — REGRAS QUE VIERAM DA LEITURA DE 35 CONVERSAS REAIS ⚠️
 Cada regra aqui corrige um defeito que apareceu em conversa de verdade, com gente de verdade. Não são preferências de estilo.
 
+0. A MENSAGEM PRIVADA DO INSTAGRAM CHAMA-SE "DIRECT", NUNCA "DIRETO". "Te chamamos no direto" soa errado em português e ninguém fala assim: o nome da coisa, no Brasil, é direct. Escreva "te chamei no direct", "te mandei um direct", "seus pedidos de mensagem". A mesma régua vale para "reels" e "stories", que também ficam no original. Não traduza nome de recurso de rede social.
+
 1. NADA DE ELOGIO AUTOMÁTICO. Apareceu em 17 das 35 conversas auditadas. Está PROIBIDO abrir uma resposta com "Que ótimo", "Que legal", "Que bacana", "Que interessante", "Que projeto incrível", "Boa pergunta", "Perfeito", "Que bom", "Boa" ou qualquer variação de entusiasmo genérico. Vá direto ao conteúdo. Você pode demonstrar interesse real comentando algo ESPECÍFICO do que a pessoa disse, o que é diferente de elogiar o fato de ela ter dito. O elogio automático é pior ainda em dois casos que aconteceram: elogiar quem você está descartando ("Que legal, Beatriz!" para uma fornecedora de embalagens) e elogiar mensagem que não tem conteúdo nenhum ("Que bom! 😄" respondendo a texto ininteligível).
 
 2. NÃO CORRIJA O VOCABULÁRIO DO CLIENTE. A palavra da casa é fragrância, e ela governa o que VOCÊ escreve, não é lição para dar ao cliente. Quando ele disser "essência", você responde usando "fragrância" naturalmente, sem apontar a diferença, sem "aqui a gente usa", sem "é como chamamos no setor", sem emoji de correção. Ele aprende pelo exemplo e não sai da conversa se sentindo corrigido. Decisão do Pedro em 19/08: "laboratório" e "blotter" estão LIBERADOS e são preferidos, porque são a linguagem mais popular e o cliente entende na hora. Não troque por "atelier" nem por "mouillette".
@@ -1760,7 +1762,7 @@ const GANCHO_PADRAO = {
     'fragrância sob medida para indústria, e o caminho começa entendendo o seu produto.\n\n' +
     'Para eu te direcionar do jeito certo, me conta uma coisa rápida: é para um produto ' +
     'da sua empresa ou para uso pessoal?',
-  publico: 'Te chamamos no direto! Se não aparecer, dá uma olhada nos seus pedidos de mensagem.',
+  publico: 'Te chamamos no direct! Se não aparecer, dá uma olhada nos seus pedidos de mensagem.',
   contexto: 'A pessoa comentou a palavra combinada em um post da Ginger, respondendo ao convite da legenda.',
   padrao: true
 };
@@ -2739,11 +2741,38 @@ const NOTA_MENSAGEM_MANUAL =
   'o contato já a leu. Continue de onde ela parou: não se apresente de novo, não repita ' +
   'o que ela já disse e não pergunte algo que ela já perguntou. Siga a régua normal ' +
   'daí em diante.';
+// ── RESPOSTA AUTOMATICA DA META NAO E MENSAGEM DE HUMANO
+// A mensagem de ausencia e a resposta instantanea da Meta saem da conta como
+// qualquer outra mensagem, entao chegam no webhook como eco e, sem esta trava,
+// entrariam no historico com a nota dizendo que uma PESSOA da Ginger escreveu
+// aquilo. O agente passaria a acreditar que um humano disse ao contato que a
+// equipe esta ausente, e trataria isso como parte do atendimento.
+// Aconteceu de verdade: em 26/08 a mensagem de ausencia se enfiou no meio da
+// qualificacao de um lead que veio pelo gancho de comentario.
+// Ignorar aqui nao desliga a mensagem, que e configuracao da Meta. Só impede
+// que ela suje a conversa.
+const RESPOSTAS_AUTOMATICAS_DA_META = [
+  /estamos ausentes/i,
+  /responderemos (assim que|em breve|o mais r[aá]pido)/i,
+  /agradecemos (sua|a sua) mensagem/i,
+  /obrigad[oa] pela sua mensagem.*(retornaremos|responderemos|em breve)/i,
+  /nossa equipe estiver dispon[ií]vel/i,
+  /recebemos sua mensagem e (responderemos|retornaremos)/i,
+  /fora do (nosso )?hor[aá]rio de (atendimento|funcionamento)/i
+];
+function ehRespostaAutomaticaDaMeta(texto) {
+  const t = String(texto || '');
+  return RESPOSTAS_AUTOMATICAS_DA_META.some(r => r.test(t));
+}
 // Registra no historico o que um humano escreveu a mao pelo aplicativo, para o
 // agente continuar a conversa sabendo o que ja foi dito. Nao responde nada.
 async function registrarMensagemManual(chave, texto, mid, canal) {
   if (!texto || !texto.trim()) return;
   if (mid && await redis('GET', `envio:${mid}`)) return;   // eco do proprio bot
+  if (ehRespostaAutomaticaDaMeta(texto)) {
+    console.log(`Resposta automática da Meta ignorada no ${canal} (${chave}): ${texto.substring(0, 60)}`);
+    return;
+  }
   const historico = await getConversaChave(chave) || [];
   const ultima = historico[historico.length - 1];
   if (ultima && ultima.role === 'assistant' && ultima.content === texto) return;
@@ -2978,7 +3007,7 @@ app.get('/facebook-test', async (req, res) => {
 // /gancho-criar?chave=SUACHAVE&link=https://www.instagram.com/p/ABC123/
 //   &palavras=quero,eu quero,me chama
 //   &direto=Oi! Vi seu comentário no post...
-//   &publico=Te chamei no direto!
+//   &publico=Te chamei no direct!
 //   &contexto=Post sobre fragrância para sabonete, o convite era falar com a gente
 //   &aplicar=1
 app.get('/gancho-criar', async (req, res) => {
@@ -2997,7 +3026,7 @@ app.get('/gancho-criar', async (req, res) => {
   if (faltando.length) {
     return res.status(400).json({
       erro: 'faltam parâmetros', faltando,
-      exemplo: '/gancho-criar?chave=...&link=https://www.instagram.com/p/ABC123/&palavras=quero,eu quero&direto=Oi! Vi seu comentário...&publico=Te chamei no direto!&contexto=post sobre X&aplicar=1'
+      exemplo: '/gancho-criar?chave=...&link=https://www.instagram.com/p/ABC123/&palavras=quero,eu quero&direto=Oi! Vi seu comentário...&publico=Te chamei no direct!&contexto=post sobre X&aplicar=1'
     });
   }
   try {

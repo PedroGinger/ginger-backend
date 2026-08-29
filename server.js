@@ -4537,10 +4537,14 @@ function ehRetornoPendente(lead) {
   return MOTIVO_COBRANCA.test(String(lead && lead.motivo_classificacao || ''));
 }
 // Há quantos dias essa pessoa está esperando.
-// Conta a partir da ÚLTIMA promessa que o agente fez, que é quando a espera
-// começou de verdade. Sem promessa localizável, conta do primeiro contato dela,
-// que sempre existe. Devolve null quando não dá para saber, e aí o e-mail diz
-// isso em vez de inventar um número.
+// Conta a partir da PRIMEIRA promessa que o agente fez, não da última.
+// A diferença não é detalhe: quando ela volta cobrando, o agente promete de
+// novo, e ancorar na promessa mais recente zera o relógio toda vez. O atraso
+// real, que é o que a Juliana precisa ver, desaparece justamente no caso em
+// que ele é maior. Decisão do Pedro, 29/08.
+// Sem promessa localizável, conta do primeiro contato dela, que sempre existe.
+// Devolve null quando não dá para saber, e aí o e-mail diz isso em vez de
+// inventar um número.
 async function esperaDoContato(chaveAlvo) {
   try {
     const sheets = await getSheetsClient();
@@ -4557,14 +4561,14 @@ async function esperaDoContato(chaveAlvo) {
       if ((l[2] || '').toLowerCase() !== 'enviada') continue;
       const texto = String(l[3] || '');
       if (!PADROES_PROMESSA.some(p => p.test(texto))) continue;
-      if (!promessa || ts > promessa) { promessa = ts; trecho = texto.substring(0, 200); }
+      if (!promessa || ts < promessa) { promessa = ts; trecho = texto.substring(0, 200); }
     }
     const base = promessa || primeira;
     if (!base) return null;
     return {
       dias: Math.max(0, Math.floor((Date.now() - base) / 86400000)),
       desde: new Date(base).toLocaleDateString('pt-BR'),
-      ancora: promessa ? 'promessa' : 'primeiro contato',
+      ancora: promessa ? 'primeira promessa' : 'primeiro contato',
       trecho
     };
   } catch(e) {
@@ -5769,8 +5773,8 @@ async function enviarEmailLead(lead, numero = null) {
       porque isso não aconteceu. Não é um lead novo para qualificar, é uma promessa
       em aberto.
       ${espera ? `<br><br><b>A contagem começa em ${espera.desde}</b>, ${
-        espera.ancora === 'promessa'
-          ? 'a partir da promessa que o agente fez a ela'
+        espera.ancora === 'primeira promessa'
+          ? 'a partir da PRIMEIRA vez que o agente prometeu contato a ela'
           : 'a partir do primeiro contato dela, porque não localizei a promessa no histórico'}.` : ''}
       ${espera && espera.trecho ? `<br><br><span style="color:#555">O que foi dito a ela:</span><br>
         <i>"${escaparHtml(espera.trecho)}"</i>` : ''}

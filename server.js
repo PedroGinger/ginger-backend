@@ -652,7 +652,6 @@ LEAD POTENCIAL FUTURO — classifique como "POTENCIAL_FUTURO" quando o contato q
 Nesses casos, direcionar educadamente para as revendas parceiras da Ginger.
 IMPORTANTE: mesmo para POTENCIAL_FUTURO, só gere o bloco se tiver pelo menos um contato (email ou telefone).
 PÓS-VENDA — classifique como "POS_VENDA" quando for cliente que JÁ COMPROU tratando de documento, pedido, prazo, transporte, troca ou amostra já enviada, conforme o caminho (2) da tabela de destinos. Não é lead novo e não é NAO_LEAD. Preencha nome, empresa e contato como sempre, deixe os quatro criterio_ em branco, e escreva no motivo exatamente o que a pessoa precisa.
-
 LEAD RUIM — classifique como "RUIM" apenas quando:
 - Não tem empresa, não tem projeto, não tem interesse real
 - É apenas curioso, estudante, ou testando o chat
@@ -678,7 +677,7 @@ Estado de São Paulo:
 Estado de Pernambuco:
 - La Bela Essenza (loja física), fracionado de 1kg
 Estado do Amazonas:
-- Aromas do Norte (loja física e online), fracionado de 100ml
+- Aromas do Norte (loja física), fracionado de 100ml
 Se o contato não informar o estado, mencionar as revendas com venda online (Paris Essências, Wanny, Paraíso das Essências, Flower, Maspa Nova Essência e Aromas do Norte). Nunca cite mais de três revendas na mesma mensagem, escolha as mais adequadas ao volume que o contato precisa.
 COMPORTAMENTO COM LEAD POTENCIAL FUTURO
 Ao identificar como POTENCIAL_FUTURO, encerrar de forma gentil e direcionar para as revendas:
@@ -754,40 +753,26 @@ SÓ DEPOIS DOS TRÊS DEGRAUS, se a pessoa continuar sem conseguir dar nem uma fa
 Se a pessoa der qualquer estimativa, mesmo grosseira, mesmo em faixa, ela conta. Estimativa acima do mínimo é criterio_volume "OK". Estimativa abaixo do mínimo é "ABAIXO", e aí sim são as revendas.
 TETO NÃO É PISO, e este erro já passou. Os 3 kg por fragrância por pedido e os R$5 mil por mês são PISO, o chão do que a Ginger atende. Quando a pessoa responde com teto — "até 3 kg", "no máximo 2 kg", "não passa de R$ 5 mil", "menos de 3 quilos" — ela NÃO atendeu o mínimo: ela disse que fica por baixo dele. Não conte o número como se atendesse. Faça UMA pergunta de confirmação, direta e sem cobrança: "Só para eu não errar o direcionamento: por fragrância, em cada pedido, você fica em torno de 3 kg ou acima disso?". Se a resposta confirmar que fica abaixo, ou vier outro teto, criterio_volume é "ABAIXO" e o caminho dela é a revenda, com cordialidade. Caso real de 25/08: um lead de velas saiu como BOM com "Até 3 kg" no campo de volume e foi para o comercial errado.
 Nunca desconte o lead pela pergunta que VOCÊ não fez. Se você não subiu os três degraus, marque criterio_volume "NAO_ESTIMOU" e volume_insistido "nao", com honestidade. O sistema trata esse caso, e mentir aqui faz o comercial ligar para a pessoa errada.
-
 ⚠️ PACOTE DE TOM — REGRAS QUE VIERAM DA LEITURA DE 35 CONVERSAS REAIS ⚠️
 Cada regra aqui corrige um defeito que apareceu em conversa de verdade, com gente de verdade. Não são preferências de estilo.
-
 0. A MENSAGEM PRIVADA DO INSTAGRAM CHAMA-SE "DIRECT", NUNCA "DIRETO". "Te chamamos no direto" soa errado em português e ninguém fala assim: o nome da coisa, no Brasil, é direct. Escreva "te chamei no direct", "te mandei um direct", "seus pedidos de mensagem". A mesma régua vale para "reels" e "stories", que também ficam no original. Não traduza nome de recurso de rede social.
-
 1. NADA DE ELOGIO AUTOMÁTICO. Apareceu em 17 das 35 conversas auditadas. Está PROIBIDO abrir uma resposta com "Que ótimo", "Que legal", "Que bacana", "Que interessante", "Que projeto incrível", "Boa pergunta", "Perfeito", "Que bom", "Boa" ou qualquer variação de entusiasmo genérico. Vá direto ao conteúdo. Você pode demonstrar interesse real comentando algo ESPECÍFICO do que a pessoa disse, o que é diferente de elogiar o fato de ela ter dito. O elogio automático é pior ainda em dois casos que aconteceram: elogiar quem você está descartando ("Que legal, Beatriz!" para uma fornecedora de embalagens) e elogiar mensagem que não tem conteúdo nenhum ("Que bom! 😄" respondendo a texto ininteligível).
-
 2. NÃO CORRIJA O VOCABULÁRIO DO CLIENTE. A palavra da casa é fragrância, e ela governa o que VOCÊ escreve, não é lição para dar ao cliente. Quando ele disser "essência", você responde usando "fragrância" naturalmente, sem apontar a diferença, sem "aqui a gente usa", sem "é como chamamos no setor", sem emoji de correção. Ele aprende pelo exemplo e não sai da conversa se sentindo corrigido. Decisão do Pedro em 19/08: "laboratório" e "blotter" estão LIBERADOS e são preferidos, porque são a linguagem mais popular e o cliente entende na hora. Não troque por "atelier" nem por "mouillette".
-
 3. UMA PERGUNTA POR MENSAGEM, SEM EXCEÇÃO. Apareceu empilhamento em 10 das 35 conversas, e foi o que fez o melhor lead do levantamento desaparecer: ele recebeu três opções de formato de produto de uma vez, mais uma dúvida sobre o encaixe da Ginger, e nunca mais respondeu. Nunca ofereça três alternativas para a pessoa escolher, nunca junte duas perguntas com "e", nunca emende uma pergunta burocrática no fim de uma mensagem que estava indo bem.
-
 4. NÃO PONHA EM DÚVIDA O ENCAIXE DA PESSOA. Proibido dizer "me ajuda a confirmar se a Ginger é o encaixe certo pra vocês", "não é bem o nosso caso" ou qualquer coisa que faça quem chegou interessado ter que se justificar. Explicar o escopo da Ginger é necessário e legítimo; transformar isso em dúvida sobre a pessoa não é. Se precisar alinhar escopo, faça em uma frase, e na mesma mensagem dê o próximo passo concreto.
-
 5. ENCERROU, ENCERROU. Apareceu encerramento repetido em 11 das 35 conversas, chegando a cinco despedidas seguidas com a mesma pessoa, e em um caso o agente se despediu e depois puxou assunto sozinho, com "Bom dia" às duas da tarde. Depois de encerrar, se a pessoa mandar algo curto do tipo "ok", "obrigado", "valeu", "blz", responda com UMA frase de no máximo seis palavras e pare. Se ela mandar outro agradecimento, NÃO responda mais nada. Nunca reabra assunto encerrado, nunca cumprimente de novo, nunca repita a lista de revendas, nunca repita informação que você já deu.
-
 6. NUNCA REPITA O QUE JÁ FOI DITO. As revendas parceiras se indicam uma vez por conversa. A regra do CNPJ se explica uma vez. O escopo da Ginger se explica uma vez. Se a pessoa não respondeu à sua pergunta, reformule em palavras diferentes, mais curtas, ou aceite a não resposta e siga.
-
 7. NÃO INVENTE ANEXO NEM LIMITAÇÃO. Só diga que não consegue abrir imagem, áudio ou arquivo se a pessoa REALMENTE tiver enviado um. Aconteceu duas vezes o agente alegar não conseguir abrir um arquivo que ninguém mandou, e nisso expor uma limitação de máquina sem nenhum motivo.
-
 8. SEM ASTERISCO, SEM MARKDOWN. No WhatsApp e no Instagram o asterisco não vira negrito, o cliente vê o asterisco na tela. Nunca escreva **assim**, nunca use ## nem listas com hífen formatadas. Texto corrido e quebra de linha, só isso.
-
 9. PREÇO: RESPONDA A PERGUNTA. Uma pessoa perguntou "quanto tá oud e olíbano" e a palavra preço não apareceu em nenhuma das onze mensagens seguintes do agente. Outra pediu orçamento e nunca ouviu nada sobre isso. Ignorar a pergunta é pior que não ter o número. Você não passa preço, e a razão é honesta: preço de fragrância depende do briefing, da concentração, da aplicação e do volume, então qualquer número dito antes disso estaria errado. Diga isso, em uma frase, e emende com a pergunta que aproxima do orçamento.
 Modelo: "Sobre valor, eu não consigo te passar um número aqui porque preço de fragrância depende do briefing, da concentração e do volume. Me conta [a próxima informação que falta] que a especialista já chega com uma proposta pra você."
-
 10. DADO DE TERCEIRO NÃO SE AFIRMA. Condição de fracionamento, preço, estoque e política das revendas parceiras são informação delas, não da Ginger. Indique a revenda e diga que as condições são conferidas com elas. Nunca afirme quantidade mínima ou fracionamento de revenda como se fosse dado nosso.
-
 11. QUANDO A PESSOA PEDE UM FUNCIONÁRIO PELO NOME. Regra do Pedro, 19/08. Três coisas, nessa ordem:
 - Nunca diga que a pessoa citada não existe, e nunca diga que ela existe. Você não fala pela agenda interna da Ginger. Já aconteceu o agente responder a um contato "não tenho um Anderson na nossa equipe por aqui", e o Anderson existe. Dar informação errada sobre a própria empresa a um terceiro é grave.
 - Nunca passe contato direto de ninguém da Ginger: nem e-mail pessoal, nem telefone, nem WhatsApp, nem cargo, nem em que área a pessoa trabalha. Isso vale mesmo que o contato diga que já falou com ela, que foi encaminhado pela recepção, ou que tem o nome completo dela.
 - Encaminhe pelo caminho (4) da tabela de destinos, para comercial@ginger.ind.br, sem prometer retorno.
 Modelo: "Não consigo falar por outras áreas por aqui, mas escrevendo para comercial@ginger.ind.br o assunto chega em quem cuida disso."
 A única exceção é o marketing, que é público: para assunto de feira, brinde, gráfica, influenciador e agência, o WhatsApp do Pedro Bolanho, 19 98292-0025, pode ser passado, conforme o caminho (1).
-
 ⚠️ CNPJ A CONFIRMAR — TOM DE CONFERÊNCIA, NUNCA DE FISCALIZAÇÃO ⚠️
 De vez em quando você vai receber, colada na mensagem do contato, uma nota interna começando com CNPJ_A_CONFIRMAR. Ela significa uma coisa só: o número tem 14 dígitos mas não fecha na conferência de dígito verificador, o que quase sempre é um algarismo trocado na digitação. Não é suspeita sobre a pessoa e não muda nada na régua.
 Peça a confirmação UMA vez, leve, e diga o que ela ganha com isso. Algo assim:
@@ -799,7 +784,6 @@ Regras de tom, todas obrigatórias:
 - Isso NUNCA é condição para continuar. Não trave o briefing, não deixe de classificar e não deixe de acionar a especialista por causa de um dígito.
 - Se ele mandar um número novo, siga em frente sem comentar a diferença.
 - Não peça foto do cartão CNPJ, nem contrato social, nem comprovante de nada.
-
 ⚠️ NUNCA PROMETA A ESPECIALISTA SEM TER O NOME DA EMPRESA ⚠️
 "Vou acionar nossa especialista" é um compromisso da Ginger com aquela pessoa, e depois de dito não dá para desfazer. Do outro lado alguém passa a esperar um telefonema.
 Antes de dizer essa frase, confirme que você tem as QUATRO coisas: nome da pessoa, NOME DA EMPRESA, pelo menos um e-mail ou telefone, e o volume resolvido, seja com estimativa da pessoa, seja depois de subir os três degraus. Faltando qualquer uma, você não encerra e não promete nada, você pergunta o que falta.
@@ -924,7 +908,7 @@ const MIN_KG = 3, MIN_REAIS = 5000;
 const MARCAS_DE_TETO =
   /\b(ate|no maximo|maximo de|no max|menos de|menor que|abaixo de|nao mais que|nao passa de|no limite de)\b/;
 function semAcento(t) {
-  return String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  return String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 // Devolve o motivo do rebaixamento, ou null quando nao ha o que rebaixar.
 // Na duvida devolve null: nao rebaixa lead bom por texto que nao deu para ler.
@@ -2261,7 +2245,7 @@ app.get('/', (req, res) => {
     canal: 'WhatsApp Cloud API (Meta)',
     redis: REDIS_URL ? 'configurado' : 'não configurado',
     phoneNumberId: WA_PHONE_ID ? 'configurado' : 'NÃO CONFIGURADO',
-    versao: 'sessao 24, telefone do canal e volume em tres estados'
+    versao: 'sessao 25, retorno pendente com contador de dias'
   });
 });
 // ── ROTA: CHAT DO SITE
@@ -2370,6 +2354,10 @@ async function tratarBlocoLead(parsed, ctx) {
     nome: parsed.nome || ctx.nomeFallback || '',
     origem: ctx.origem
   });
+  // A chave do canal viaja junto com o lead ate o e-mail. E ela que permite
+  // medir ha quantos dias a pessoa espera, sem precisar adivinhar pelo formato
+  // do "numero" recebido, que muda de canal para canal.
+  parsed.chaveCanal = ctx.idCanal;
   // ⚠️ QUEM JA FOI LEAD NAO VIRA NAO_LEAD POR UMA MENSAGEM NOVA ⚠️
   // Caso Livia Leon, Atelie Lila Leon, linha 30. Em 12/08 ela concluiu o
   // briefing e ouviu que a especialista entraria em contato. Em 18/08 voltou e
@@ -4521,6 +4509,137 @@ const PADROES_PROMESSA = [
   /vou acionar/i,
   /vai chamar (voc[êe]|no whats)/i
 ];
+// ══════════════════════════════════════════════════════════════
+// ── RETORNO PENDENTE: O RELÓGIO QUE A JULIANA PRECISA VER
+// ══════════════════════════════════════════════════════════════
+// Achado de 28/08. A Erica, da Laburê Ritual, voltou cobrando o retorno que a
+// Ginger prometeu, e o aviso chegou com o assunto "Lead BOM (0/4)". Os quatro
+// critérios em branco não são defeito: quem volta cobrando mantém a
+// classificação que já tinha, e a régua não é reaplicada. Mas o placar no
+// assunto faz o aviso parecer contraditório e esconde o que importa.
+//
+// Em cobrança de retorno o que importa não é o placar, é o RELÓGIO. São dois
+// assuntos diferentes usando o mesmo formato de e-mail:
+//   qualificação      -> quatro critérios, placar, destino conforme a régua
+//   retorno pendente  -> há quantos dias essa pessoa está esperando
+// Daqui em diante, cada um tem cara própria.
+const RETORNO_INTERVALO_DIAS = 2;   // relembra a cada dois dias
+const RETORNO_MAX_ENVIOS = 5;       // dia 0, 2, 4, 6, 8, e para
+// Cobrança de retorno chega por dois caminhos, e os dois precisam contar.
+// 1. O backend recusou um NAO_LEAD porque a linha já era BOM (flag cobrandoRetorno).
+// 2. O agente seguiu o prompt, manteve a classificação anterior e escreveu no
+//    motivo que a pessoa voltou cobrando. Este é o caminho da Erica, e era o
+//    que passava despercebido.
+const MOTIVO_COBRANCA =
+  /(volt\w+|retorn\w+).{0,40}cobran|cobran\w+.{0,20}retorno|sem o retorno|retorno prometido|prometid\w+ pela ginger/i;
+function ehRetornoPendente(lead) {
+  if (lead && lead.cobrandoRetorno) return true;
+  return MOTIVO_COBRANCA.test(String(lead && lead.motivo_classificacao || ''));
+}
+// Há quantos dias essa pessoa está esperando.
+// Conta a partir da ÚLTIMA promessa que o agente fez, que é quando a espera
+// começou de verdade. Sem promessa localizável, conta do primeiro contato dela,
+// que sempre existe. Devolve null quando não dá para saber, e aí o e-mail diz
+// isso em vez de inventar um número.
+async function esperaDoContato(chaveAlvo) {
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets || !chaveAlvo) return null;
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_CONVERSAS}!A:E`
+    });
+    let promessa = null, primeira = null, trecho = '';
+    for (const l of (r.data.values || []).slice(1)) {
+      if (chaveConversa(l[1] || '') !== chaveAlvo) continue;
+      const ts = parseDataBrasil(l[0]);
+      if (!ts) continue;
+      if (!primeira || ts < primeira) primeira = ts;
+      if ((l[2] || '').toLowerCase() !== 'enviada') continue;
+      const texto = String(l[3] || '');
+      if (!PADROES_PROMESSA.some(p => p.test(texto))) continue;
+      if (!promessa || ts > promessa) { promessa = ts; trecho = texto.substring(0, 200); }
+    }
+    const base = promessa || primeira;
+    if (!base) return null;
+    return {
+      dias: Math.max(0, Math.floor((Date.now() - base) / 86400000)),
+      desde: new Date(base).toLocaleDateString('pt-BR'),
+      ancora: promessa ? 'promessa' : 'primeiro contato',
+      trecho
+    };
+  } catch(e) {
+    console.error('Erro ao medir a espera do contato:', e.message);
+    return null;
+  }
+}
+function fraseDaEspera(espera) {
+  if (!espera) return 'HÁ DIAS';
+  if (espera.dias === 0) return 'DESDE HOJE';
+  if (espera.dias === 1) return 'HÁ 1 DIA';
+  return `HÁ ${espera.dias} DIAS`;
+}
+// Guarda o caso para o lembrete de dois em dois dias.
+async function registrarRetornoPendente(lead, numero) {
+  const chave = lead.chaveCanal || (numero ? chaveConversa(numero) : '');
+  if (!chave) return;
+  let estado = null;
+  try {
+    const bruto = await redis('GET', `retorno:${chave}`);
+    estado = bruto ? JSON.parse(bruto) : null;
+  } catch(e) { estado = null; }
+  estado = estado || { envios: 0, criadoEm: Date.now() };
+  estado.envios += 1;
+  estado.ultimoEnvio = Date.now();
+  estado.numero = numero || '';
+  estado.lead = {
+    nome: lead.nome || '', empresa: lead.empresa || '', email: lead.email || '',
+    telefone: lead.telefone || '', cnpj: lead.cnpj || '', segmento: lead.segmento || '',
+    volume_mensal: lead.volume_mensal || '', classificacao: lead.classificacao || '',
+    motivo_classificacao: lead.motivo_classificacao || '',
+    cobrandoRetorno: true, chaveCanal: chave
+  };
+  await redis('SET', `retorno:${chave}`, JSON.stringify(estado), 'EX', 30 * 86400);
+  await redis('SADD', 'retornos_pendentes', chave);
+  console.log(`Retorno pendente registrado (${chave}): envio ${estado.envios} de ${RETORNO_MAX_ENVIOS}`);
+}
+async function encerrarRetorno(chave, motivo) {
+  await redis('SREM', 'retornos_pendentes', chave);
+  await redis('DEL', `retorno:${chave}`);
+  console.log(`Retorno pendente encerrado (${chave}): ${motivo}`);
+}
+// Confere de duas em duas horas quem ainda está esperando e relembra a cada
+// dois dias, com o número de dias subindo no assunto. Para quando bate cinco
+// envios, ou quando a coluna PROJETO daquela linha é preenchida, que é o sinal
+// de que o comercial pegou o caso.
+async function rotinaRetornosPendentes() {
+  const chaves = await redis('SMEMBERS', 'retornos_pendentes');
+  if (!Array.isArray(chaves) || !chaves.length) return;
+  for (const chave of chaves) {
+    try {
+      const bruto = await redis('GET', `retorno:${chave}`);
+      if (!bruto) { await redis('SREM', 'retornos_pendentes', chave); continue; }
+      const estado = JSON.parse(bruto);
+      if (estado.envios >= RETORNO_MAX_ENVIOS) {
+        await encerrarRetorno(chave, `atingiu ${RETORNO_MAX_ENVIOS} envios, agora é assunto de reunião`);
+        continue;
+      }
+      if ((Date.now() - (estado.ultimoEnvio || 0)) / 86400000 < RETORNO_INTERVALO_DIAS) continue;
+      const linha = await buscarLinhaPorIdCanal(chave)
+        || (/^\d+$/.test(chave) ? await buscarLinhaPorTelefone(chave) : null);
+      if (linha) {
+        const sheets = await getSheetsClient();
+        const r = sheets && await sheets.spreadsheets.values.get({
+          spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!M${linha}`
+        });
+        const projeto = String((((r && r.data.values) || [])[0] || [])[0] || '').trim();
+        if (projeto) { await encerrarRetorno(chave, `projeto ${projeto} anotado na planilha`); continue; }
+      }
+      await enviarEmailLead(estado.lead, estado.numero || chave);
+    } catch(e) {
+      console.error(`Falha ao relembrar o retorno de ${chave}:`, e.message);
+    }
+  }
+}
 app.get('/promessas-pendentes', async (req, res) => {
   if (!exigeChave(req, res)) return;
   try {
@@ -4589,6 +4708,44 @@ app.get('/promessas-pendentes', async (req, res) => {
     console.error('Erro ao levantar promessas pendentes:', e.message);
     res.status(500).json({ erro: e.message });
   }
+});
+// ── ROTA: RETORNOS PENDENTES EM ANDAMENTO
+// Mostra quem está na fila de lembrete, há quantos dias espera e quantos
+// e-mails já saíram. Somente leitura. Com &encerrar=<chave> tira um caso da
+// fila, para quando alguém resolveu por fora e o lembrete perdeu o sentido.
+app.get('/retornos-pendentes', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const encerrar = (req.query.encerrar || '').trim();
+  if (encerrar) {
+    await encerrarRetorno(chaveConversa(encerrar), 'encerrado à mão');
+    return res.json({ modo: 'ENCERRADO', contato: chaveConversa(encerrar) });
+  }
+  const chaves = await redis('SMEMBERS', 'retornos_pendentes');
+  const saida = [];
+  for (const chave of (Array.isArray(chaves) ? chaves : [])) {
+    const bruto = await redis('GET', `retorno:${chave}`);
+    if (!bruto) continue;
+    let e = null;
+    try { e = JSON.parse(bruto); } catch(err) { continue; }
+    const espera = await esperaDoContato(chave);
+    saida.push({
+      contato: chave, canal: canalDaChave(chave),
+      nome: (e.lead && e.lead.nome) || '', empresa: (e.lead && e.lead.empresa) || '',
+      esperandoHaDias: espera ? espera.dias : null,
+      contadoDesde: espera ? espera.desde : null,
+      envios: `${e.envios} de ${RETORNO_MAX_ENVIOS}`,
+      ultimoEnvio: e.ultimoEnvio ? new Date(e.ultimoEnvio).toLocaleString('pt-BR') : '',
+      encerrar: `/retornos-pendentes?chave=SUA_CHAVE&encerrar=${encodeURIComponent(chave)}`
+    });
+  }
+  saida.sort((a, b) => (b.esperandoHaDias || 0) - (a.esperandoHaDias || 0));
+  res.json({
+    modo: 'somente leitura',
+    total: saida.length,
+    regra: `relembra a cada ${RETORNO_INTERVALO_DIAS} dias, no máximo ${RETORNO_MAX_ENVIOS} envios. ` +
+      `Para sozinho quando a coluna PROJETO da linha é preenchida.`,
+    casos: saida
+  });
 });
 // ══════════════════════════════════════════════════════════════
 // ── ROTA: REPROCESSAR UMA CONVERSA JÁ ENCERRADA
@@ -5063,39 +5220,33 @@ app.get('/auditoria', async (req, res) => {
     };
     const id = l => ({ linha: l.linha, nome: l.nome || '(sem nome)',
       empresa: l.empresa || '', contato: l.telefone || l.chave, qual: l.qual || '(vazia)' });
-
     // 1. CRITICO — conversou, ouviu promessa, e nao tem classificacao.
     // Foi exatamente aqui que a Alessandra e a Natiara sumiram.
     registra('mudo_com_promessa', 'critico',
       'Ouviu promessa de contato e não tem classificação',
       'Rode /reprocessar em modo prévia para cada um e aplique.',
       leads.filter(l => !l.qual && l.c.prometeu).map(id));
-
     // 2. CRITICO — conversa longa concluida sem classificacao nenhuma.
     registra('mudo', 'critico',
       'Conversou de verdade e não gerou classificação',
       'Confira no painel e rode /reprocessar. Se for lixo do chat do site, ignore.',
       leads.filter(l => !l.qual && l.c.recebidas >= 4 && !l.c.prometeu).map(id));
-
     // 3. CRITICO — BOM sem contato nenhum. O comercial nao consegue ligar.
     registra('bom_sem_contato', 'critico',
       'Classificado BOM e sem e-mail nem telefone',
       'Sem canal de contato o comercial não consegue dar seguimento nenhum.',
       leads.filter(l => l.qual === 'BOM' && !l.email.trim() && !l.telefone.trim()).map(id));
-
     // 4. ATENCAO — NAO_LEAD que ouviu promessa de retorno.
     // O prompt proibe, mas prompt e instrucao. Aqui a gente confere.
     registra('naolead_com_promessa', 'atencao',
       'NAO_LEAD que ouviu promessa de retorno',
       'O agente prometeu contato a quem não é comprador. Se repetir, a regra do prompt não está pegando.',
       leads.filter(l => l.qual === 'NAO_LEAD' && l.c.prometeu).map(id));
-
     // 5. ATENCAO — classificacao sem motivo. Perde a rastreabilidade.
     registra('sem_motivo', 'atencao',
       'Tem classificação e não tem motivo',
       'Sem o motivo ninguém consegue auditar por que aquele lead foi aprovado ou reprovado.',
       leads.filter(l => l.qual && !l.motivo).map(id));
-
     // 6. ATENCAO — conversou e nunca ganhou linha na planilha.
     const orfaos = Object.keys(conv)
       .filter(k => !k.startsWith('site-') && !chavesComLinha.has(k) && conv[k].recebidas > 0)
@@ -5104,14 +5255,12 @@ app.get('/auditoria', async (req, res) => {
     registra('orfao', 'atencao',
       'Conversou e não existe na planilha',
       'Rode /recuperar-orfaos em modo prévia.', orfaos);
-
     // 7. ATENCAO — mesmo telefone em mais de uma linha viva.
     const dups = Object.entries(porTelefone).filter(([, ls]) => ls.length > 1)
       .map(([tel, ls]) => ({ telefone: tel, linhas: ls }));
     registra('duplicado_telefone', 'atencao',
       'Mesmo telefone em mais de uma linha',
       'Infla a contagem de leads captados. Precisa de rota de dedupe por telefone.', dups);
-
     // 8. INFO — BOM gravado sem os quatro criterios OK.
     // Legitimo quando foi decisao humana, e o motivo diz isso. Fora disso,
     // significa que o rebaixamento automatico nao rodou.
@@ -5120,7 +5269,6 @@ app.get('/auditoria', async (req, res) => {
       'Esperado quando houve decisão humana, e o motivo registra isso. Fora disso, investigue.',
       leads.filter(l => l.qual === 'BOM' && !/decisão humana/i.test(l.motivo)
         && /rebaixad/i.test(l.motivo)).map(id));
-
     const criticos = achados.filter(a => a.gravidade === 'critico');
     const atencao = achados.filter(a => a.gravidade === 'atencao');
     const resumo = criticos.length ? 'TEM PROBLEMA CRÍTICO'
@@ -5523,18 +5671,19 @@ app.get('/webhook-subscribe', async (req, res) => {
 // para todos, porque e justamente o caso em que alguem precisa dar retorno.
 // Sem esta excecao, a separacao esconderia exatamente quem esta esperando.
 const EMAIL_TRIAGEM = process.env.EMAIL_TRIAGEM || 'pedro.bolanho@ginger.ind.br';
-function destinoDoEmail(lead, placar) {
+function destinoDoEmail(lead, placar, espera) {
   const comercial = (process.env.EMAIL_COMERCIAL || '').split(',').map(e => e.trim()).filter(Boolean);
   const triagem = EMAIL_TRIAGEM.split(',').map(e => e.trim()).filter(Boolean);
   const classe = classificacaoNormalizada(lead) || 'BOM';
   const empresa = lead.empresa || 'Sem empresa';
   const corpo = `${classe} (${placar.ok}/4): ${empresa} — Agente Ginger`;
-  // Lead que volta cobrando o retorno prometido vai para o comercial na hora,
-  // seja BOM ou POTENCIAL_FUTURO. Ela nao esta pedindo informacao, esta
-  // esperando desde a semana passada.
-  if (lead.cobrandoRetorno) {
-    return { para: comercial.length ? comercial : triagem, rotulo: 'comercial (cobrando retorno)',
-      assunto: `[COBRANDO RETORNO] Lead ${corpo}` };
+  // Retorno pendente não leva placar no assunto. O placar é a régua da
+  // qualificação, e aqui a régua não foi reaplicada de propósito. O que a
+  // Juliana precisa ver de relance é o relógio.
+  if (ehRetornoPendente(lead)) {
+    const quem = [lead.nome, lead.empresa].filter(Boolean).join(' / ') || 'contato sem nome';
+    return { para: comercial.length ? comercial : triagem, rotulo: 'comercial (retorno pendente)',
+      assunto: `⚠️ RETORNO PENDENTE ${fraseDaEspera(espera)} — ${quem}` };
   }
   // Pos-venda vai para os mesmos e-mails do lead, decisao do Pedro em 19/08.
   // O caso que criou esta classificacao: o Renan, da Valenzza, cliente que ja
@@ -5575,6 +5724,10 @@ async function enviarEmailLead(lead, numero = null) {
   // Foi assim que a Alessandra ficou quatro dias esperando um telefonema que
   // nenhum humano sabia que devia dar. O e-mail passa a sair sempre, e o que
   // falta aparece em destaque no topo do cartao.
+  const retornoPendente = ehRetornoPendente(lead);
+  const espera = retornoPendente
+    ? await esperaDoContato(lead.chaveCanal || (numero ? chaveConversa(numero) : ''))
+    : null;
   const placar = placarCriterios(lead);
   // Vermelho e "reprovou". Ambar e "ninguem apurou". Pintar as duas de vermelho
   // fazia a Juliana ler descarte onde havia so pergunta em aberto.
@@ -5608,13 +5761,21 @@ async function enviarEmailLead(lead, numero = null) {
       para desfazer, então alguém precisa dar um retorno, mesmo que seja para
       direcionar às revendas.
     </div>` : '';
-  const avisoCobranca = lead.cobrandoRetorno ? `
-    <div style="border-left:4px solid #C0392B;background:#FDECEA;padding:12px 14px;margin:0 0 14px">
-      <b style="color:#C0392B">ESTA PESSOA VOLTOU PARA COBRAR O RETORNO.</b><br>
-      Ela já havia concluído uma conversa com a Ginger e ouviu que uma especialista
-      entraria em contato. Voltou a escrever porque isso não aconteceu. É o contato
-      mais quente da sua caixa hoje: alguém que quer tanto que veio atrás.
-      Responda por onde ela escreveu, não por e-mail.
+  const avisoCobranca = retornoPendente ? `
+    <div style="border-left:5px solid #C0392B;background:#FDECEA;padding:16px 18px;margin:0 0 16px">
+      <b style="color:#C0392B;font-size:17px">ESTA PESSOA ESTÁ ESPERANDO ${fraseDaEspera(espera)}.</b>
+      <br><br>
+      Ela já conversou com a Ginger, ouviu que alguém entraria em contato, e voltou
+      porque isso não aconteceu. Não é um lead novo para qualificar, é uma promessa
+      em aberto.
+      ${espera ? `<br><br><b>A contagem começa em ${espera.desde}</b>, ${
+        espera.ancora === 'promessa'
+          ? 'a partir da promessa que o agente fez a ela'
+          : 'a partir do primeiro contato dela, porque não localizei a promessa no histórico'}.` : ''}
+      ${espera && espera.trecho ? `<br><br><span style="color:#555">O que foi dito a ela:</span><br>
+        <i>"${escaparHtml(espera.trecho)}"</i>` : ''}
+      <br><br>Responda pelo canal em que ela escreveu, não por e-mail. E não peça o
+      briefing de novo: está tudo na conversa.
     </div>` : '';
   const falta = Array.isArray(lead.dadosIncompletos) ? lead.dadosIncompletos : [];
   const rotuloFalta = { nome: 'o nome da pessoa', empresa: 'o nome da empresa', contato: 'e-mail e telefone' };
@@ -5666,19 +5827,22 @@ async function enviarEmailLead(lead, numero = null) {
     ? (doLead ? `${lead.telefone} — <a href="${doLead.wa}">WhatsApp</a>` : lead.telefone)
     : '-';
   const html = `
-    <h2 style="color:#47166B">Novo Lead ${lead.classificacao || 'sem classificação'} — Ginger Agente</h2>
+    <h2 style="color:#47166B">${retornoPendente
+      ? 'Retorno pendente — Ginger Agente'
+      : `Novo Lead ${lead.classificacao || 'sem classificação'} — Ginger Agente`}</h2>
     ${avisoCobranca}
     ${avisoIncompleto}
     ${avisoPromessa}
     ${avisoVolume}
-    <p style="font-size:16px"><b>Apuração dos critérios: ${placar.ok} de 4</b></p>
+    ${retornoPendente ? '' : `<p style="font-size:16px"><b>Apuração dos critérios: ${placar.ok} de 4</b></p>`}
     ${linhaCanal}
     <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%">
+      ${retornoPendente ? '' : `
       <tr style="background:#F2EAF7"><td colspan="2"><b>APURAÇÃO</b></td></tr>
       ${linhaCriterio('CNPJ confirmado', 'criterio_cnpj', lead.cnpj)}
       ${linhaCriterio('Interesse em abrir projeto', 'criterio_projeto', '')}
       ${linhaCriterio('Volume mínimo', 'criterio_volume', lead.volume_mensal)}
-      ${linhaCriterio('Segmento atendido', 'criterio_segmento', lead.segmento)}
+      ${linhaCriterio('Segmento atendido', 'criterio_segmento', lead.segmento)}`}
       <tr><td><b>Classificação</b></td><td><b>${lead.classificacao || '-'}</b></td></tr>
       <tr><td><b>Motivo</b></td><td>${lead.motivo_classificacao || '-'}</td></tr>
       <tr style="background:#F2EAF7"><td colspan="2"><b>DADOS DO CONTATO</b></td></tr>
@@ -5699,7 +5863,7 @@ async function enviarEmailLead(lead, numero = null) {
     <p style="color:#47166B;font-size:13px"><b>Ao abrir o projeto no Otimizah, anote o número do projeto na coluna PROJETO da planilha LEADS GINGER.</b> É o que permite medir o retorno dos leads da internet.</p>
     <p style="color:#888;font-size:12px">Gerado automaticamente pelo Agente Ginger</p>
   `;
-  const destino = destinoDoEmail(lead, placar);
+  const destino = destinoDoEmail(lead, placar, espera);
   console.log(`E-mail de lead: ${lead.classificacao} → ${destino.rotulo} (${destino.para.join(', ')})`);
   try {
     const response = await fetch('https://api.resend.com/emails', {
@@ -5721,6 +5885,7 @@ async function enviarEmailLead(lead, numero = null) {
       throw new Error(data.message || 'Erro ao enviar');
     }
     console.log('Email enviado com sucesso via Resend:', data.id);
+    if (retornoPendente) await registrarRetornoPendente(lead, numero);
   } catch(error) {
     console.error('Erro detalhado ao enviar email:', error.message);
     throw error;
@@ -5736,6 +5901,11 @@ setInterval(() => {
 setInterval(() => {
   verificarNovosLeads();
 }, INTERVALO_VERIFICACAO_MS);
+// ── LEMBRETE DOS RETORNOS PENDENTES (confere de 2 em 2 horas)
+setInterval(() => {
+  rotinaRetornosPendentes().catch(e =>
+    console.error('Rotina de retornos pendentes falhou:', e.message));
+}, 2 * 60 * 60 * 1000);
 // ── RENOVAÇÃO AUTOMÁTICA DO TOKEN DO INSTAGRAM (uma vez por dia)
 setInterval(() => {
   rotinaTokenInstagram().catch(e => console.error('Rotina do token do Instagram falhou:', e.message));
@@ -5745,7 +5915,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`Servidor Ginger rodando na porta ${PORT}`);
   console.log('Canal: WhatsApp Cloud API (Meta)');
-  console.log('Versao: sessao 22, regua de qualificacao corrigida');
+  console.log('Versao: sessao 25, retorno pendente com contador de dias');
   console.log('Phone Number ID:', WA_PHONE_ID || 'NÃO CONFIGURADO');
   console.log('Template de abordagem:', TEMPLATE_ABORDAGEM, TEMPLATE_IDIOMA);
   console.log('Planilha:', SPREADSHEET_ID);
@@ -5759,7 +5929,7 @@ app.listen(PORT, async () => {
   console.log('Status do numero: GET /phone-status');
   console.log('Previa do backlog: GET /backlog-previa?dias=45');
   console.log('Corrigir cabecalhos da planilha: GET /corrigir-cabecalhos');
-  console.log('Metricas dos leads da internet: GET /metricas?mes=8&ano=2026');
+  console.log('Retornos pendentes: GET /retornos-pendentes?chave=...');
   console.log('Inbox de auditoria: GET /inbox?chave=... ' + (process.env.INBOX_KEY ? '(INBOX_KEY configurada)' : '(FALTA criar INBOX_KEY no Render)'));
   console.log('Painel analitico: GET /painel?chave=...&mes=8&ano=2026');
   console.log('Instagram: webhook em /instagram · teste em GET /instagram-test?chave=... ' +

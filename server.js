@@ -2245,7 +2245,7 @@ app.get('/', (req, res) => {
     canal: 'WhatsApp Cloud API (Meta)',
     redis: REDIS_URL ? 'configurado' : 'não configurado',
     phoneNumberId: WA_PHONE_ID ? 'configurado' : 'NÃO CONFIGURADO',
-    versao: 'sessao 25, retorno pendente com contador de dias'
+    versao: 'sessao 27, aviso de retorno so quando o lead volta a escrever'
   });
 });
 // ── ROTA: CHAT DO SITE
@@ -4523,8 +4523,18 @@ const PADROES_PROMESSA = [
 //   qualificação      -> quatro critérios, placar, destino conforme a régua
 //   retorno pendente  -> há quantos dias essa pessoa está esperando
 // Daqui em diante, cada um tem cara própria.
-const RETORNO_INTERVALO_DIAS = 2;   // relembra a cada dois dias
-const RETORNO_MAX_ENVIOS = 5;       // dia 0, 2, 4, 6, 8, e para
+// ── DECISÃO DO PEDRO, 10/09: SEM LEMBRETE AUTOMÁTICO
+// O lembrete de dois em dois dias só parava quando a coluna PROJETO era
+// preenchida, ou seja, só quando o caso dava certo. Quem foi atendido e não
+// virou projeto continuava sendo cobrado. Caso do Marcelo Messias, da First
+// Class: a Juliana falou com ele em 05/09, ele parou de responder, e o e-mail
+// seguiu chegando todo dia como se ninguém tivesse feito nada.
+// O contato acontece no WhatsApp pessoal da vendedora, fora do agente, então o
+// sistema não tem como descobrir que houve atendimento. Em vez de inventar um
+// jeito de adivinhar isso, a regra virou outra e mais simples: o aviso sai UMA
+// vez, no momento em que a pessoa escreve de novo para o número do agente.
+// Se ela foi atendida, ela não escreve mais, e nada chega. Se escreveu de
+// novo, a cobrança é real e o aviso é legítimo.
 // Cobrança de retorno chega por dois caminhos, e os dois precisam contar.
 // 1. O backend recusou um NAO_LEAD porque a linha já era BOM (flag cobrandoRetorno).
 // 2. O agente seguiu o prompt, manteve a classificação anterior e escreveu no
@@ -4563,12 +4573,15 @@ async function esperaDoContato(chaveAlvo) {
       if (!PADROES_PROMESSA.some(p => p.test(texto))) continue;
       if (!promessa || ts < promessa) { promessa = ts; trecho = texto.substring(0, 200); }
     }
-    const base = promessa || primeira;
+    // O contador é sempre do PRIMEIRO contato dela, não da promessa.
+    // Como o e-mail só sai quando ela escreve de novo, o número precisa dizer
+    // há quanto tempo essa relação está em aberto. Decisão do Pedro, 10/09.
+    const base = primeira;
     if (!base) return null;
     return {
       dias: Math.max(0, Math.floor((Date.now() - base) / 86400000)),
       desde: new Date(base).toLocaleDateString('pt-BR'),
-      ancora: promessa ? 'primeira promessa' : 'primeiro contato',
+      ancora: 'primeiro contato',
       trecho
     };
   } catch(e) {
@@ -4582,67 +4595,10 @@ function fraseDaEspera(espera) {
   if (espera.dias === 1) return 'HÁ 1 DIA';
   return `HÁ ${espera.dias} DIAS`;
 }
-// Guarda o caso para o lembrete de dois em dois dias.
-async function registrarRetornoPendente(lead, numero) {
-  const chave = lead.chaveCanal || (numero ? chaveConversa(numero) : '');
-  if (!chave) return;
-  let estado = null;
-  try {
-    const bruto = await redis('GET', `retorno:${chave}`);
-    estado = bruto ? JSON.parse(bruto) : null;
-  } catch(e) { estado = null; }
-  estado = estado || { envios: 0, criadoEm: Date.now() };
-  estado.envios += 1;
-  estado.ultimoEnvio = Date.now();
-  estado.numero = numero || '';
-  estado.lead = {
-    nome: lead.nome || '', empresa: lead.empresa || '', email: lead.email || '',
-    telefone: lead.telefone || '', cnpj: lead.cnpj || '', segmento: lead.segmento || '',
-    volume_mensal: lead.volume_mensal || '', classificacao: lead.classificacao || '',
-    motivo_classificacao: lead.motivo_classificacao || '',
-    cobrandoRetorno: true, chaveCanal: chave
-  };
-  await redis('SET', `retorno:${chave}`, JSON.stringify(estado), 'EX', 30 * 86400);
-  await redis('SADD', 'retornos_pendentes', chave);
-  console.log(`Retorno pendente registrado (${chave}): envio ${estado.envios} de ${RETORNO_MAX_ENVIOS}`);
-}
 async function encerrarRetorno(chave, motivo) {
   await redis('SREM', 'retornos_pendentes', chave);
   await redis('DEL', `retorno:${chave}`);
   console.log(`Retorno pendente encerrado (${chave}): ${motivo}`);
-}
-// Confere de duas em duas horas quem ainda está esperando e relembra a cada
-// dois dias, com o número de dias subindo no assunto. Para quando bate cinco
-// envios, ou quando a coluna PROJETO daquela linha é preenchida, que é o sinal
-// de que o comercial pegou o caso.
-async function rotinaRetornosPendentes() {
-  const chaves = await redis('SMEMBERS', 'retornos_pendentes');
-  if (!Array.isArray(chaves) || !chaves.length) return;
-  for (const chave of chaves) {
-    try {
-      const bruto = await redis('GET', `retorno:${chave}`);
-      if (!bruto) { await redis('SREM', 'retornos_pendentes', chave); continue; }
-      const estado = JSON.parse(bruto);
-      if (estado.envios >= RETORNO_MAX_ENVIOS) {
-        await encerrarRetorno(chave, `atingiu ${RETORNO_MAX_ENVIOS} envios, agora é assunto de reunião`);
-        continue;
-      }
-      if ((Date.now() - (estado.ultimoEnvio || 0)) / 86400000 < RETORNO_INTERVALO_DIAS) continue;
-      const linha = await buscarLinhaPorIdCanal(chave)
-        || (/^\d+$/.test(chave) ? await buscarLinhaPorTelefone(chave) : null);
-      if (linha) {
-        const sheets = await getSheetsClient();
-        const r = sheets && await sheets.spreadsheets.values.get({
-          spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!M${linha}`
-        });
-        const projeto = String((((r && r.data.values) || [])[0] || [])[0] || '').trim();
-        if (projeto) { await encerrarRetorno(chave, `projeto ${projeto} anotado na planilha`); continue; }
-      }
-      await enviarEmailLead(estado.lead, estado.numero || chave);
-    } catch(e) {
-      console.error(`Falha ao relembrar o retorno de ${chave}:`, e.message);
-    }
-  }
 }
 app.get('/promessas-pendentes', async (req, res) => {
   if (!exigeChave(req, res)) return;
@@ -4713,10 +4669,9 @@ app.get('/promessas-pendentes', async (req, res) => {
     res.status(500).json({ erro: e.message });
   }
 });
-// ── ROTA: RETORNOS PENDENTES EM ANDAMENTO
-// Mostra quem está na fila de lembrete, há quantos dias espera e quantos
-// e-mails já saíram. Somente leitura. Com &encerrar=<chave> tira um caso da
-// fila, para quando alguém resolveu por fora e o lembrete perdeu o sentido.
+// ── ROTA: RETORNOS PENDENTES QUE SOBRARAM NO REDIS
+// A fila de lembrete acabou em 10/09. Esta rota existe só para enxergar e
+// limpar o que ficou gravado antes disso. Com &encerrar=<chave> tira um caso.
 app.get('/retornos-pendentes', async (req, res) => {
   if (!exigeChave(req, res)) return;
   const encerrar = (req.query.encerrar || '').trim();
@@ -4737,8 +4692,6 @@ app.get('/retornos-pendentes', async (req, res) => {
       nome: (e.lead && e.lead.nome) || '', empresa: (e.lead && e.lead.empresa) || '',
       esperandoHaDias: espera ? espera.dias : null,
       contadoDesde: espera ? espera.desde : null,
-      envios: `${e.envios} de ${RETORNO_MAX_ENVIOS}`,
-      ultimoEnvio: e.ultimoEnvio ? new Date(e.ultimoEnvio).toLocaleString('pt-BR') : '',
       encerrar: `/retornos-pendentes?chave=SUA_CHAVE&encerrar=${encodeURIComponent(chave)}`
     });
   }
@@ -4746,8 +4699,9 @@ app.get('/retornos-pendentes', async (req, res) => {
   res.json({
     modo: 'somente leitura',
     total: saida.length,
-    regra: `relembra a cada ${RETORNO_INTERVALO_DIAS} dias, no máximo ${RETORNO_MAX_ENVIOS} envios. ` +
-      `Para sozinho quando a coluna PROJETO da linha é preenchida.`,
+    regra: 'O lembrete automático foi desligado em 10/09. O aviso de retorno pendente ' +
+      'sai uma vez, no momento em que a pessoa escreve de novo para o número do agente. ' +
+      'Estes registros são resíduo da fila antiga e expiram sozinhos em 30 dias.',
     casos: saida
   });
 });
@@ -5772,10 +5726,7 @@ async function enviarEmailLead(lead, numero = null) {
       Ela já conversou com a Ginger, ouviu que alguém entraria em contato, e voltou
       porque isso não aconteceu. Não é um lead novo para qualificar, é uma promessa
       em aberto.
-      ${espera ? `<br><br><b>A contagem começa em ${espera.desde}</b>, ${
-        espera.ancora === 'primeira promessa'
-          ? 'a partir da PRIMEIRA vez que o agente prometeu contato a ela'
-          : 'a partir do primeiro contato dela, porque não localizei a promessa no histórico'}.` : ''}
+      ${espera ? `<br><br><b>Primeiro contato dela em ${espera.desde}.</b>` : ''}
       ${espera && espera.trecho ? `<br><br><span style="color:#555">O que foi dito a ela:</span><br>
         <i>"${escaparHtml(espera.trecho)}"</i>` : ''}
       <br><br>Responda pelo canal em que ela escreveu, não por e-mail. E não peça o
@@ -5889,7 +5840,6 @@ async function enviarEmailLead(lead, numero = null) {
       throw new Error(data.message || 'Erro ao enviar');
     }
     console.log('Email enviado com sucesso via Resend:', data.id);
-    if (retornoPendente) await registrarRetornoPendente(lead, numero);
   } catch(error) {
     console.error('Erro detalhado ao enviar email:', error.message);
     throw error;
@@ -5905,11 +5855,6 @@ setInterval(() => {
 setInterval(() => {
   verificarNovosLeads();
 }, INTERVALO_VERIFICACAO_MS);
-// ── LEMBRETE DOS RETORNOS PENDENTES (confere de 2 em 2 horas)
-setInterval(() => {
-  rotinaRetornosPendentes().catch(e =>
-    console.error('Rotina de retornos pendentes falhou:', e.message));
-}, 2 * 60 * 60 * 1000);
 // ── RENOVAÇÃO AUTOMÁTICA DO TOKEN DO INSTAGRAM (uma vez por dia)
 setInterval(() => {
   rotinaTokenInstagram().catch(e => console.error('Rotina do token do Instagram falhou:', e.message));
@@ -5919,7 +5864,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`Servidor Ginger rodando na porta ${PORT}`);
   console.log('Canal: WhatsApp Cloud API (Meta)');
-  console.log('Versao: sessao 25, retorno pendente com contador de dias');
+  console.log('Versao: sessao 27, aviso de retorno so quando o lead volta a escrever');
   console.log('Phone Number ID:', WA_PHONE_ID || 'NÃO CONFIGURADO');
   console.log('Template de abordagem:', TEMPLATE_ABORDAGEM, TEMPLATE_IDIOMA);
   console.log('Planilha:', SPREADSHEET_ID);

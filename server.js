@@ -213,7 +213,8 @@ const SHEET_CONVERSAS = 'Conversas';
 //   E EMPRESA       F CIDADE     G FATURAMENTO  H CNPJ
 //   I STATUS        <- estado operacional, escrito pelo bot
 //   J ORIGEM        <- bot-planilha ou bot-site, escrito pelo bot
-//   K QUALIFICACAO  <- BOM, POTENCIAL_FUTURO, RUIM, NAO_LEAD, escrito pelo bot
+//   K QUALIFICACAO  <- BOM, POTENCIAL_FUTURO, RUIM, NAO_LEAD, POS_VENDA,
+//                      DUVIDA_TECNICA, escrito pelo bot
 //   L MOTIVO        <- justificativa em uma linha, escrito pelo bot
 //   M PROJETO       <- numero do projeto no Otimizah, preenchido pelo comercial
 //   N RESPONSAVEL   <- Juliana ou Jennifer, preenchido pelo comercial
@@ -320,6 +321,69 @@ async function isNumeroAbordado(numero) {
 }
 async function marcarNumeroAbordado(numero) {
   await redis('SADD', 'numeros_abordados', chaveNumero(numero));
+}
+// ══════════════════════════════════════════════════════════════
+// ── MODO HUMANO: A CONVERSA QUE UMA PESSOA ASSUMIU
+// ══════════════════════════════════════════════════════════════
+// Pedido do Pedro em 28/09. Quando alguem da Ginger escreve a mao numa conversa,
+// o bot NAO continua falando por essa pessoa. Antes ele continuava: a mensagem
+// manual entrava no historico com uma nota de contexto e o agente seguia a
+// regua normal a partir dali. Isso funciona para o agente nao se repetir, e nao
+// funciona quando o humano quer conduzir a conversa inteira.
+//
+// A trava e POR CONVERSA e nao tem prazo. So sai por comando: /soltar-bot.
+// Foi decisao explicita: expirar sozinho traria o bot de volta no meio de um
+// atendimento humano lento, que e exatamente o que se quer evitar.
+//
+// Enquanto travada, a conversa continua sendo REGISTRADA por inteiro, no
+// historico e na aba Conversas. O que nao acontece e a chamada ao modelo e o
+// envio de resposta. Quando o bot voltar, ele le tudo que foi dito no meio.
+const PREFIXO_HUMANO = 'humano:';
+const SET_HUMANO = 'conversas_humanas';
+async function emModoHumano(chave) {
+  if (!chave) return false;
+  const r = await redis('GET', PREFIXO_HUMANO + chave);
+  return !!r;
+}
+async function travarModoHumano(chave, quem) {
+  if (!chave) return false;
+  const ja = await emModoHumano(chave);
+  await redis('SET', PREFIXO_HUMANO + chave, JSON.stringify({
+    quem: quem || 'equipe', desde: agoraBrasil()
+  }));
+  await redis('SADD', SET_HUMANO, chave);
+  if (!ja) console.log(`MODO HUMANO LIGADO para ${chave} (${quem || 'equipe'}). O agente nao responde mais nesta conversa ate /soltar-bot.`);
+  return !ja;
+}
+async function soltarModoHumano(chave) {
+  if (!chave) return false;
+  const tinha = await emModoHumano(chave);
+  await redis('DEL', PREFIXO_HUMANO + chave);
+  await redis('SREM', SET_HUMANO, chave);
+  if (tinha) console.log(`MODO HUMANO DESLIGADO para ${chave}. O agente volta a responder.`);
+  return tinha;
+}
+async function listarModoHumano() {
+  const chaves = await redis('SMEMBERS', SET_HUMANO);
+  if (!Array.isArray(chaves)) return [];
+  const saida = [];
+  for (const c of chaves) {
+    const bruto = await redis('GET', PREFIXO_HUMANO + c);
+    if (!bruto) { await redis('SREM', SET_HUMANO, c); continue; }
+    let dados = {};
+    try { dados = JSON.parse(bruto); } catch(e) { dados = { quem: 'equipe' }; }
+    saida.push({ chave: c, canal: canalDaChave(c), quem: dados.quem || 'equipe', desde: dados.desde || '' });
+  }
+  return saida;
+}
+// Registra no historico a mensagem que chegou enquanto a conversa esta com um
+// humano. Sem isto, o bot volta cego: nao saberia nada do que foi conversado
+// no periodo em que ficou calado.
+async function guardarSemResponder(chave, texto) {
+  if (!chave || !texto) return;
+  let historico = await getConversaChave(chave) || [];
+  historico.push({ role: 'user', content: texto });
+  await saveConversaChave(chave, historico.slice(-20));
 }
 // ── Deduplicação de webhook. A Meta reenvia o mesmo evento se não receber 200
 // rápido, e como o bot tem delay antes de responder, sem isso o lead recebe
@@ -652,6 +716,46 @@ LEAD POTENCIAL FUTURO — classifique como "POTENCIAL_FUTURO" quando o contato q
 Nesses casos, direcionar educadamente para as revendas parceiras da Ginger.
 IMPORTANTE: mesmo para POTENCIAL_FUTURO, só gere o bloco se tiver pelo menos um contato (email ou telefone).
 PÓS-VENDA — classifique como "POS_VENDA" quando for cliente que JÁ COMPROU tratando de documento, pedido, prazo, transporte, troca ou amostra já enviada, conforme o caminho (2) da tabela de destinos. Não é lead novo e não é NAO_LEAD. Preencha nome, empresa e contato como sempre, deixe os quatro criterio_ em branco, e escreva no motivo exatamente o que a pessoa precisa.
+
+⚠️ DÚVIDA TÉCNICA — CLASSIFICAÇÃO "DUVIDA_TECNICA" ⚠️
+Criada em 28/09. Existe porque cliente e prospect perguntam COMO USAR a fragrância, e isso não é briefing de projeto, não é pedido de documento e não é descarte. É uma pergunta de uso, e quem pergunta como usar já tem a fragrância na mão ou está prestes a ter.
+
+Exemplo real do tipo de pergunta que cai aqui: "A fragrância de vocês eu devo usar tudo junto? Pois parece perder a potência com o tempo."
+
+Entram aqui: dosagem, diluição, como incorporar ao produto, armazenamento, validade, perda de intensidade percebida, alteração de cor ou de odor no produto, comportamento da fragrância em base diferente, fixação, rendimento.
+
+NÃO entram aqui: pedido de FISPQ, SDS, IFRA, laudo, certificado de análise ou segunda via de documento. Isso é POS_VENDA, mesmo sendo assunto técnico. A diferença é simples: documento é POS_VENDA, uso é DUVIDA_TECNICA.
+
+Se a pessoa chegou com dúvida técnica MAS também quer abrir um projeto novo, o projeto manda: classifique pela régua normal (BOM, POTENCIAL_FUTURO) e responda a dúvida no meio da conversa.
+
+COMO RESPONDER: você responde o básico, com o FAQ abaixo. Responda em no máximo três ou quatro linhas, em linguagem de gente, sem jargão. Depois pergunte UMA coisa que ajude a entender melhor o caso: qual produto, qual aplicação, ou o que exatamente ela está observando.
+
+⚠️ OS TRÊS LIMITES DO QUE VOCÊ PODE DIZER, E ELES NÃO SE NEGOCIAM ⚠️
+1. Você NUNCA dá percentual de dosagem, número de concentração, prazo de validade ou temperatura específica. Esses números mudam de fragrância para fragrância e estão na ficha técnica daquele projeto. Dar um número errado aqui estraga o produto do cliente.
+2. Você NUNCA afirma que a fragrância é compatível ou incompatível com uma base, um conservante, um tensoativo ou qualquer matéria-prima específica. Quem responde isso é o time técnico, olhando a formulação.
+3. Você NUNCA diz que houve problema com o lote, com a fórmula ou com a qualidade. Você não tem como saber, e afirmar isso vira reclamação formal que ninguém abriu.
+
+Nesses três casos, e em qualquer pergunta que o FAQ não cobre, você diz com honestidade que vai passar para o time técnico, e preenche "duvida_resolvida": "nao". Modelo: "Essa parte é melhor o nosso time técnico te responder olhando a sua formulação, porque depende da base. Vou passar para eles com o que você me contou."
+
+FAQ TÉCNICO BÁSICO — use como base das respostas, com suas palavras, nunca copiando o texto inteiro
+
+(a) "Devo usar tudo de uma vez?" — Não. A fragrância é concentrada e entra no produto numa proporção definida no projeto dela. O frasco não é para ser consumido de uma vez, é matéria-prima dosada. A proporção correta está na documentação técnica que acompanha aquela fragrância, e se ela não estiver em mãos, o time técnico reenvia.
+
+(b) "Parece que perde potência com o tempo" — Três causas explicam quase todos os casos, e nenhuma delas é defeito da fragrância. A primeira é frasco mal fechado ou muito aberto: as notas mais leves são as primeiras a evaporar, e o que sobra cheira mais pesado e menos intenso. A segunda é luz e calor: fragrância guardada perto de janela, de forno ou de equipamento quente muda mais rápido. A terceira é fadiga olfativa, que é o nariz de quem trabalha com aquilo o dia inteiro parando de registrar o cheiro. É mais comum do que parece, e por isso a comparação honesta se faz com o nariz de outra pessoa, ou depois de um intervalo.
+
+(c) "Como guardar?" — Frasco original, bem fechado, em temperatura ambiente, longe de luz direta e de fonte de calor. Fragrância aberta e reaberta muitas vezes por dia dura menos que fragrância fracionada uma vez em recipiente menor.
+
+(d) "Quanto tempo dura?" — A validade vem na ficha técnica de cada fragrância, porque depende da composição. Se a pessoa não tem a ficha, o time técnico reenvia. Você não estima prazo.
+
+(e) "No meu produto cheira diferente do que no papel" — Isso é esperado, e não é erro. A base do produto interfere na percepção: um sabonete, um desinfetante e uma vela não entregam a mesma fragrância do mesmo jeito. Por isso a avaliação que vale é sempre no produto final, não só no blotter. Se a diferença incomoda, o caso é de ajuste com o time técnico.
+
+(f) "A cor do meu produto mudou" ou "o cheiro virou depois de um tempo no produto" — Aqui você NÃO explica a causa. Pergunte qual o produto, há quanto tempo, e se mudou alguma coisa na formulação ou no fornecedor da base, e passe para o time técnico com "duvida_resolvida": "nao". Alteração no produto acabado é assunto de estabilidade, e estabilidade se avalia olhando a fórmula.
+
+(g) "Quanto rende?" — O rendimento depende da dosagem daquele projeto e do tamanho do lote do cliente. Você não calcula. Pergunte o volume de produto que ela pretende fazer e passe para o time técnico.
+
+O QUE PREENCHER NO BLOCO: classificacao "DUVIDA_TECNICA", nome, empresa e contato como sempre, os quatro criterio_ em branco, o campo "duvida_tecnica_tema" com o assunto em duas ou três palavras (por exemplo "dosagem", "perda de intensidade", "armazenamento", "alteração no produto"), e "duvida_resolvida" com "sim" quando o FAQ deu conta ou "nao" quando o caso precisa do time técnico. Só o "nao" aciona alguém na Ginger, então responda com honestidade: marcar "sim" numa dúvida que você não resolveu deixa o cliente sem resposta.
+
+⚠️ E-mail só sai quando "duvida_resolvida" é "nao". Por isso, se você prometeu à pessoa que alguém vai responder, o campo TEM que estar "nao". Prometer retorno e marcar "sim" é deixar a pessoa esperando um contato que ninguém vai dar.
 LEAD RUIM — classifique como "RUIM" apenas quando:
 - Não tem empresa, não tem projeto, não tem interesse real
 - É apenas curioso, estudante, ou testando o chat
@@ -665,6 +769,7 @@ BOM: "Projeto concreto identificado", "Volume adequado e segmento atendido", "In
 POTENCIAL_FUTURO: "Volume abaixo do mínimo, direcionado para revendas", "Sem CNPJ, direcionado para revendas", "Volume não informado", "Segmento fora dos atendidos"
 RUIM: "Apenas curioso, sem projeto", "Sem interesse real", "Parou de responder"
 NAO_LEAD: "Fornecedor oferecendo serviço", "Procurava funcionário específico", "Assunto administrativo", "Candidato a vaga", "Cliente com questão de pós-venda"
+DUVIDA_TECNICA: "Dúvida de dosagem respondida pelo FAQ", "Perda de intensidade percebida, orientado sobre armazenamento", "Alteração no produto acabado, encaminhado ao time técnico", "Rendimento, encaminhado ao time técnico"
 REVENDAS PARCEIRAS DA GINGER
 Quando classificar como POTENCIAL_FUTURO, direcionar para as revendas conforme o estado do contato:
 Estado de São Paulo:
@@ -807,6 +912,7 @@ NÃO gere o bloco %%%LEAD_DATA%%% apenas porque tem nome, empresa e contato. O b
 - Para BOM: você já coletou informações suficientes, já entendeu o projeto, já confirmou os quatro critérios, já pediu CNPJ e contato, e está pronto para encerrar e acionar o comercial.
 - Para POTENCIAL_FUTURO: você já entendeu que o volume é baixo, não foi informado, não tem CNPJ ou o segmento está fora, e vai direcionar para revendas.
 - Para RUIM: você já confirmou que não há interesse real.
+- Para DUVIDA_TECNICA: você já respondeu o que dava para responder com o FAQ, ou já identificou que o caso precisa do time técnico. Não espere a conversa acabar para gerar, gere assim que a dúvida estiver clara.
 - Para NAO_LEAD: você já identificou que a pessoa não quer comprar da Ginger. Aqui o bloco pode ser gerado de imediato, sem coletar nada.
 Se a conversa ainda está em andamento, se você ainda está fazendo perguntas, se ainda está entendendo o projeto, NÃO gere o bloco. Continue conversando. O bloco é o ÚLTIMO passo, não o primeiro.
 FORMATO ESPECIAL DE RESPOSTA PARA EXTRAÇÃO DE DADOS
@@ -830,7 +936,9 @@ Somente quando a conversa atingir um ponto de conclusão conforme descrito acima
   "criterio_cnpj": "",
   "criterio_projeto": "",
   "criterio_volume": "",
-  "criterio_segmento": ""
+  "criterio_segmento": "",
+  "duvida_tecnica_tema": "",
+  "duvida_resolvida": ""
 }
 %%%END_LEAD_DATA%%%
 Atualize esse bloco a cada resposta com os dados mais recentes. Deixe em branco os que ainda não foram informados. Sempre preencha classificacao e motivo_classificacao assim que tiver informação suficiente.
@@ -2414,9 +2522,15 @@ async function tratarBlocoLead(parsed, ctx) {
     'Canal:', ctx.canal, 'Classificação:', parsed.classificacao, `Critérios: ${placar.ok}/4`,
     faltando.length ? `FALTA: ${faltando.join(', ')}` : '');
   if (rowIndex) {
-    await atualizarStatus(rowIndex, faltando.length
-      ? `concluído com dados incompletos (falta ${faltando.join(', ')})`
-      : 'qualificado pelo agente');
+    // Com a regra de e-mail de 28/09, a promessa em aberto deixou de tocar a
+    // campainha de alguem. Se ela tambem nao aparecesse na planilha, sumiria de
+    // vez, e sobraria uma pessoa esperando um telefonema que ninguem sabe que
+    // deve. O status carimba isso, e o painel mostra sem custar um e-mail.
+    await atualizarStatus(rowIndex, parsed.promessaDeEspecialistaPendente
+      ? 'PROMESSA EM ABERTO, o agente disse que a especialista ligaria'
+      : (faltando.length
+        ? `concluído com dados incompletos (falta ${faltando.join(', ')})`
+        : 'qualificado pelo agente'));
     await atualizarQualificacao(rowIndex, classificacaoNormalizada(parsed), parsed.motivo_classificacao);
     await atualizarOrigem(rowIndex, ctx.origem);
     await completarDadosLead(rowIndex, parsed);
@@ -2492,6 +2606,20 @@ app.post('/whatsapp-cloud', async (req, res) => {
     console.log('Processando mensagem de:', numero, 'Texto:', mensagem.substring(0, 100));
     await registrarConversa(numero, 'recebida', mensagem);
     await marcarLidoEDigitando(msgId);
+    // ── CONVERSA ASSUMIDA POR UMA PESSOA: o bot registra e cala.
+    // No WhatsApp Cloud API nao existe eco de mensagem enviada por fora, entao
+    // a trava aqui e ligada a mao, pelo /travar-bot, antes ou depois de voce
+    // iniciar a conversa. E o unico jeito honesto: o backend nao tem como
+    // descobrir sozinho que voce falou com a pessoa por outro caminho.
+    if (await emModoHumano(chaveNumero(numero))) {
+      await guardarSemResponder(chaveNumero(numero), mensagem);
+      const linhaHumana = await garantirLinhaDoContato({
+        idCanal: chaveNumero(numero), telefone: numero, nome: '', origem: 'bot-site'
+      });
+      if (linhaHumana) await atualizarStatus(linhaHumana, 'em atendimento humano, aguardando resposta da equipe');
+      console.log(`MODO HUMANO: mensagem de ${numero} registrada e NAO respondida pelo agente.`);
+      return;
+    }
     // Mesma regra do Instagram: quem chama o WhatsApp direto, sem nunca ter
     // preenchido o formulario, ganha linha na planilha no primeiro contato.
     // Antes disso, essas conversas eram as "orfas" que o painel denunciava.
@@ -2602,6 +2730,16 @@ async function atenderCanalMeta(cfg) {
   const { psid, texto, chave, canal, origem, enviar, marcarVisto, perfil, notaDeContexto } = cfg;
   await marcarVisto(psid);
   await registrarConversa(chave, 'recebida', texto, origem);
+  // ── CONVERSA ASSUMIDA POR UMA PESSOA: o bot registra e cala.
+  if (await emModoHumano(chave)) {
+    await guardarSemResponder(chave, texto);
+    // garantirLinhaDoContato e idempotente: procura antes de criar. Chamar aqui
+    // evita que a conversa assumida por um humano fique sem linha na planilha.
+    const linha = await garantirLinhaDoContato({ idCanal: chave, telefone: '', nome: '', origem });
+    if (linha) await atualizarStatus(linha, 'em atendimento humano, aguardando resposta da equipe');
+    console.log(`MODO HUMANO: mensagem de ${chave} registrada e NAO respondida pelo agente.`);
+    return;
+  }
   // Mesma fila do WhatsApp. No Instagram o defeito apareceu com a Hilda: tres
   // mensagens do agente em cinco segundos, todas com a mesma pergunta de CNPJ,
   // e ela respondeu "Oi", sem entender o que estava acontecendo.
@@ -2773,6 +2911,10 @@ async function registrarMensagemManual(chave, texto, mid, canal) {
   await saveConversaChave(chave, novo.slice(-20));
   await registrarConversa(chave, 'enviada', texto, `humano-${canal}`);
   console.log(`Mensagem manual registrada no ${canal} para ${chave}: ${texto.substring(0, 80)}`);
+  // A partir daqui a conversa e de quem escreveu. O agente para de responder
+  // nela ate alguem chamar /soltar-bot. Vale tanto para a conversa que a Ginger
+  // comecou do zero quanto para aquela em que um humano entrou no meio.
+  await travarModoHumano(chave, `humano-${canal}`);
 }
 const NOTA_INSTAGRAM =
   'Esta conversa chegou pelo Instagram Direct da Ginger. O público do Instagram é ' +
@@ -2905,6 +3047,47 @@ function exigeChave(req, res) {
 // ── ROTA: TESTAR O INSTAGRAM (protegida)
 // Confirma token e conta sem mandar mensagem para ninguem.
 // Com ?para=<IGSID>&texto=oi manda uma mensagem de teste.
+// ══════════════════════════════════════════════════════════════
+// ── CONTROLE DO MODO HUMANO
+// ══════════════════════════════════════════════════════════════
+// /travar-bot?contato=5519999999999&chave=SUA_INBOX_KEY    liga a trava
+// /soltar-bot?contato=ig:178...&chave=SUA_INBOX_KEY        desliga
+// /conversas-humanas?chave=SUA_INBOX_KEY                   lista o que esta travado
+//
+// Atencao ao nome dos parametros: "chave" ja e a senha das rotas internas
+// (INBOX_KEY), entao o contato viaja em "contato". Ele e o mesmo identificador
+// que aparece no painel e na inbox: o numero no WhatsApp, "ig:" + id no
+// Instagram, "fb:" + id no Messenger. Numero com ou sem o nono digito da no
+// mesmo, o backend normaliza.
+// A normalizacao do contato e a chaveConversa que ja existe no arquivo: ela
+// trata "ig:", "fb:", "site-" e o nono digito do WhatsApp. Duplicar isso aqui
+// criaria duas verdades sobre o que e a chave de uma conversa.
+app.get('/travar-bot', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const chave = chaveConversa((req.query.contato || '').trim());
+  if (!chave) return res.status(400).json({ erro: 'informe ?contato=' });
+  const novo = await travarModoHumano(chave, req.query.quem || 'equipe');
+  res.json({
+    ok: true, contato: chave, canal: canalDaChave(chave),
+    resultado: novo ? 'trava ligada agora' : 'ja estava travada',
+    aviso: 'O agente nao responde mais nesta conversa. Para devolver, use /soltar-bot com o mesmo contato.'
+  });
+});
+app.get('/soltar-bot', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const chave = chaveConversa((req.query.contato || '').trim());
+  if (!chave) return res.status(400).json({ erro: 'informe ?contato=' });
+  const tinha = await soltarModoHumano(chave);
+  res.json({
+    ok: true, contato: chave, canal: canalDaChave(chave),
+    resultado: tinha ? 'trava removida, o agente volta a responder' : 'esta conversa nao estava travada'
+  });
+});
+app.get('/conversas-humanas', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const lista = await listarModoHumano();
+  res.json({ total: lista.length, conversas: lista });
+});
 app.get('/instagram-test', async (req, res) => {
   if (!exigeChave(req, res)) return;
   const tok = await tokenInstagram();
@@ -3396,6 +3579,10 @@ app.get('/inbox', async (req, res) => {
     const LIMITE_CONTATOS = parseInt(req.query.limite) || 40;
     const mostrados = contatos.slice(0, LIMITE_CONTATOS);
     const totalRespondeu = contatos.filter(c => c.recebidas > 0).length;
+    // Sem isto, travar uma conversa e esquecer dela nao tem sintoma nenhum: a
+    // inbox mostraria uma conversa parada igual a qualquer outra.
+    const travadasLista = await redis('SMEMBERS', SET_HUMANO);
+    const travadas = new Set(Array.isArray(travadasLista) ? travadasLista : []);
     const badge = (txt, cor) => `<span class="tag" style="background:${cor}">${escaparHtml(txt)}</span>`;
     const corQual = q => {
       const u = String(q || '').toUpperCase();
@@ -3403,6 +3590,7 @@ app.get('/inbox', async (req, res) => {
       if (u === 'POTENCIAL_FUTURO') return '#B8860B';
       if (u === 'NAO_LEAD') return '#7A7A7A';
       if (u === 'POS_VENDA') return '#2C7A9E';
+      if (u === 'DUVIDA_TECNICA') return '#6B3FA0';
       if (u === 'RUIM') return '#C0392B';
       return '#47166B';
     };
@@ -3420,6 +3608,7 @@ app.get('/inbox', async (req, res) => {
       const tags = [];
       const corCanal = { Instagram: '#C13584', Facebook: '#1877F2', 'Chat do site': '#8A8792', WhatsApp: '#128C7E' };
       tags.push(badge(canal, corCanal[canal] || '#6E6E6E'));
+      if (travadas.has(c.chave)) tags.push(badge('bot pausado, atendimento humano', '#C0392B'));
       if (L && L.qualificacao) tags.push(badge(L.qualificacao, corQual(L.qualificacao)));
       if (L && L.status) tags.push(badge(L.status, '#6B4E8C'));
       if (L && L.projeto) tags.push(badge('projeto ' + L.projeto, '#1B7F4B'));
@@ -3808,8 +3997,8 @@ let MES = D.mesInicial, ANO = D.anoInicial, TODOS = false;
 const MESES=['','Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 const ROT_EST={qualificado:'Qualificado',sem_resposta:'Sem resposta',abandonou:'Parou de responder',em_conversa:'Em conversa',nao_abordado:'Não abordado'};
 const NOTA_EST={sem_resposta:'abordado, nunca respondeu',abandonou:'respondeu e sumiu, sem devolutiva',em_conversa:'ativo nas últimas 24h',qualificado:'conversa concluída',nao_abordado:'ainda na fila'};
-const NOTA_QUAL={BOM:'passou nos quatro critérios',POTENCIAL_FUTURO:'sem CNPJ, volume baixo ou não informado',POS_VENDA:'cliente que já comprou, pedindo documento ou tratando de pedido',RUIM:'sem projeto ou interesse real',NAO_LEAD:'fornecedor, cobrança, assunto interno'};
-const TOK={BOM:'bom',POTENCIAL_FUTURO:'fut',POS_VENDA:'pos',RUIM:'ruim',NAO_LEAD:'nao'};
+const NOTA_QUAL={BOM:'passou nos quatro critérios',POTENCIAL_FUTURO:'sem CNPJ, volume baixo ou não informado',POS_VENDA:'cliente que já comprou, pedindo documento ou tratando de pedido',DUVIDA_TECNICA:'pergunta de uso, dosagem ou armazenamento',RUIM:'sem projeto ou interesse real',NAO_LEAD:'fornecedor, cobrança, assunto interno'};
+const TOK={BOM:'bom',POTENCIAL_FUTURO:'fut',POS_VENDA:'pos',DUVIDA_TECNICA:'tec',RUIM:'ruim',NAO_LEAD:'nao'};
 // Rotulos legiveis. "bot-planilha" nao significa nada para quem assiste a
 // apresentacao; o nome do canal significa.
 const ROT_ORIGEM={'bot-planilha':'WhatsApp, abordagem ativa','bot-site':'Site e WhatsApp receptivo',
@@ -3846,7 +4035,7 @@ function delta(atual,anterior){
 function contas(arr){const n=e=>arr.filter(l=>l.estado===e).length,q=v=>arr.filter(l=>l.qual===v).length;
  return {captados:arr.length,abordados:arr.filter(l=>l.estado!=='nao_abordado').length,
  responderam:arr.filter(l=>l.recebidas>0).length,qualificados:arr.filter(l=>l.qual).length,
- bom:q('BOM'),futuro:q('POTENCIAL_FUTURO'),posVenda:q('POS_VENDA'),ruim:q('RUIM'),naoLead:q('NAO_LEAD'),
+ bom:q('BOM'),futuro:q('POTENCIAL_FUTURO'),posVenda:q('POS_VENDA'),duvidaTec:q('DUVIDA_TECNICA'),ruim:q('RUIM'),naoLead:q('NAO_LEAD'),
  projetos:arr.filter(l=>l.projeto).length,n};}
 function csv(arr){
  const cab=['Entrada','Nome','Empresa','Canal','Estado','Qualificacao','Mensagens','Recebidas','Projeto','Motivo'];
@@ -3905,6 +4094,7 @@ function render(){
   barra({rot:'POTENCIAL_FUTURO',valor:C.futuro,max:maxQual,cor:'var(--serie)',sw:'fut',nota:NOTA_QUAL.POTENCIAL_FUTURO,clic:1,dim:'qual',chave:'POTENCIAL_FUTURO',ativa:F.qual==='POTENCIAL_FUTURO'})+
   barra({rot:'RUIM',valor:C.ruim,max:maxQual,cor:'var(--serie)',sw:'ruim',nota:NOTA_QUAL.RUIM,clic:1,dim:'qual',chave:'RUIM',ativa:F.qual==='RUIM'})+
   barra({rot:'PÓS-VENDA',valor:C.posVenda,max:maxQual,cor:'var(--serie)',sw:'pos',nota:NOTA_QUAL.POS_VENDA,clic:1,dim:'qual',chave:'POS_VENDA',ativa:F.qual==='POS_VENDA'})+
+  barra({rot:'DÚVIDA TÉCNICA',valor:C.duvidaTec,max:maxQual,cor:'var(--serie)',sw:'tec',nota:NOTA_QUAL.DUVIDA_TECNICA,clic:1,dim:'qual',chave:'DUVIDA_TECNICA',ativa:F.qual==='DUVIDA_TECNICA'})+
   barra({rot:'NAO_LEAD',valor:C.naoLead,max:maxQual,cor:'var(--serie)',sw:'nao',nota:NOTA_QUAL.NAO_LEAD,clic:1,dim:'qual',chave:'NAO_LEAD',ativa:F.qual==='NAO_LEAD'})+
   '</div>'+
   '<div class="card"><h2>Onde o lead parou</h2><p class="leg">Estados exclusivos. "Sem resposta" mede o template de abordagem. "Parou de responder" mede o agente perdendo a pessoa no meio da conversa.</p>'+
@@ -3921,7 +4111,7 @@ function render(){
   '<tbody>'+(tab||'<tr><td colspan="10">Nenhum lead neste recorte.</td></tr>')+'</tbody></table></div></div>';
  const origensTodas=[...new Set(D.leads.map(l=>l.origem))].sort();
  chips('f-origem','origem',origensTodas,rotOrigem);
- chips('f-qual','qual',['BOM','POTENCIAL_FUTURO','POS_VENDA','RUIM','NAO_LEAD']);
+ chips('f-qual','qual',['BOM','POTENCIAL_FUTURO','POS_VENDA','DUVIDA_TECNICA','RUIM','NAO_LEAD']);
  chips('f-estado','estado',['sem_resposta','abandonou','em_conversa','qualificado','nao_abordado'],v=>ROT_EST[v]);
  document.getElementById('limpar').hidden=!ativo;
 }
@@ -4048,7 +4238,7 @@ render();
 //
 // Esta rota e de mao unica e roda uma vez. Por padrao ela apenas MOSTRA o que
 // faria. Só muda a planilha com &aplicar=1.
-const CLASSIFICACOES_VALIDAS = ['BOM', 'POTENCIAL_FUTURO', 'POS_VENDA', 'RUIM', 'NAO_LEAD'];
+const CLASSIFICACOES_VALIDAS = ['BOM', 'POTENCIAL_FUTURO', 'POS_VENDA', 'DUVIDA_TECNICA', 'RUIM', 'NAO_LEAD'];
 // ══════════════════════════════════════════════════════════════
 // ── ROTA: CONVERSA DE UM CONTATO (JSON, para o painel)
 // ══════════════════════════════════════════════════════════════
@@ -4893,7 +5083,10 @@ app.get('/reprocessar', async (req, res) => {
     });
     let emailEnviado = false, erroEmail = null;
     if (lead) {
-      try { await enviarEmailLead(lead, alvo); emailEnviado = true; }
+      // A previa e o resultado precisam dizer a verdade sobre o e-mail. Antes
+      // esta linha marcava "enviado" so por nao ter dado erro, e com a regra
+      // nova a funcao pode simplesmente nao enviar.
+      try { emailEnviado = (await enviarEmailLead(lead, alvo)) === true; }
       catch(e) { erroEmail = e.message; }
     }
     console.log(`Reprocessamento de ${alvo}: ${classificacaoNormalizada(parsed)}, e-mail ${emailEnviado ? 'enviado' : 'NÃO enviado'}`);
@@ -5387,8 +5580,9 @@ app.post('/lead', async (req, res) => {
   }
   try {
     corrigirClassificacaoSeInconsistente(lead);
-    await enviarEmailLead(lead);
-    res.json({ success: true, emailEnviado: true, classificacao: lead.classificacao });
+    const enviado = (await enviarEmailLead(lead)) === true;
+    res.json({ success: true, emailEnviado: enviado, classificacao: lead.classificacao,
+      motivo: enviado ? undefined : 'classificação não aciona ninguém pela regra de 28/09' });
   } catch(error) {
     res.status(500).json({ error: 'Erro ao enviar email' });
   }
@@ -5629,6 +5823,46 @@ app.get('/webhook-subscribe', async (req, res) => {
 // para todos, porque e justamente o caso em que alguem precisa dar retorno.
 // Sem esta excecao, a separacao esconderia exatamente quem esta esperando.
 const EMAIL_TRIAGEM = process.env.EMAIL_TRIAGEM || 'pedro.bolanho@ginger.ind.br';
+// ══════════════════════════════════════════════════════════════
+// ── QUEM MERECE UM E-MAIL
+// ══════════════════════════════════════════════════════════════
+// Mudanca pedida pelo Pedro em 28/09. Antes TODA conversa concluida virava
+// e-mail: BOM ia para o comercial e POTENCIAL_FUTURO, RUIM e incompleto iam
+// para a triagem. O volume de POTENCIAL_FUTURO passou a ser ruido, e ruido na
+// caixa de entrada faz o e-mail que importa ser lido com menos atencao.
+//
+// Agora so quatro situacoes acionam alguem por e-mail:
+//   BOM              lead qualificado, vai para o comercial
+//   POS_VENDA        cliente pagante precisando de algo, tem dono na empresa
+//   RETORNO PENDENTE pessoa cobrando um retorno que a Ginger prometeu
+//   DUVIDA_TECNICA   somente quando o agente NAO resolveu a duvida
+//
+// O resto (POTENCIAL_FUTURO, RUIM, dados incompletos) continua sendo GRAVADO
+// na planilha e continua aparecendo no painel. O que deixa de existir e o
+// e-mail. Nada some da metrica, so para de tocar a campainha.
+//
+// ⚠️ UM CASO FICOU DE FORA E VOCE PRECISA SABER DISSO ⚠️
+// Existe o lead que o agente concluiu como BOM, a quem ele JA DISSE que uma
+// especialista entraria em contato, e que so depois o backend rebaixou para
+// POTENCIAL_FUTURO. A promessa foi feita a pessoa e nao da para desfazer. Com
+// a regra nova, ninguem fica sabendo dessa promessa. Se voce quiser que esse
+// caso especifico volte a avisar, troque false por true na linha abaixo.
+const EMAIL_PROMESSA_PENDENTE = false;
+function deveEnviarEmail(lead) {
+  if (isNaoLead(lead)) return false;
+  if (ehRetornoPendente(lead)) return true;
+  if (lead.cobrandoRetorno) return true;
+  const classe = classificacaoNormalizada(lead) || 'BOM';
+  if (classe === 'POS_VENDA') return true;
+  if (classe === 'DUVIDA_TECNICA') {
+    // Duvida que o agente respondeu com o FAQ nao precisa de humano. So sobe
+    // o que ele nao conseguiu resolver.
+    return String(lead.duvida_resolvida || '').trim().toLowerCase() !== 'sim';
+  }
+  if (classe === 'BOM') return true;
+  if (EMAIL_PROMESSA_PENDENTE && lead.promessaDeEspecialistaPendente) return true;
+  return false;
+}
 function destinoDoEmail(lead, placar, espera) {
   const comercial = (process.env.EMAIL_COMERCIAL || '').split(',').map(e => e.trim()).filter(Boolean);
   const triagem = EMAIL_TRIAGEM.split(',').map(e => e.trim()).filter(Boolean);
@@ -5651,6 +5885,14 @@ function destinoDoEmail(lead, placar, espera) {
   if (classe === 'POS_VENDA') {
     return { para: comercial.length ? comercial : triagem, rotulo: 'comercial (pós-venda)',
       assunto: `[PÓS-VENDA] ${empresa} — Agente Ginger` };
+  }
+  // Duvida tecnica que o agente nao resolveu. Vai para o mesmo destino do
+  // pos-venda porque o caminho dentro da Ginger e o mesmo: quem atende o
+  // cliente e quem aciona o time tecnico.
+  if (classe === 'DUVIDA_TECNICA') {
+    const tema = lead.duvida_tecnica_tema ? ` (${lead.duvida_tecnica_tema})` : '';
+    return { para: comercial.length ? comercial : triagem, rotulo: 'comercial (dúvida técnica)',
+      assunto: `[DÚVIDA TÉCNICA] ${empresa}${tema} — Agente Ginger` };
   }
   if (lead.promessaDeEspecialistaPendente) {
     return { para: comercial.length ? comercial : triagem, rotulo: 'comercial (promessa em aberto)',
@@ -5676,6 +5918,14 @@ async function enviarEmailLead(lead, numero = null) {
   // que nenhum caminho novo de codigo acione o comercial por engano.
   if (isNaoLead(lead)) {
     console.log('EMAIL BLOQUEADO: NAO_LEAD nao aciona o comercial:', lead.nome, lead.empresa);
+    return;
+  }
+  // Filtro unico de quem aciona alguem. Fica no topo de proposito: abaixo desta
+  // linha o codigo consulta a Receita e monta um HTML grande, e nao faz sentido
+  // pagar esse trabalho por um e-mail que nao vai sair.
+  if (!deveEnviarEmail(lead)) {
+    console.log(`EMAIL NAO ENVIADO (regra de 28/09): classificacao ${classificacaoNormalizada(lead) || '(vazia)'} nao aciona ninguem.`,
+      lead.nome || '(sem nome)', lead.empresa || '(sem empresa)', '— registrado na planilha normalmente.');
     return;
   }
   // Antes, lead com campo faltando era bloqueado aqui e ninguem ficava sabendo.
@@ -5840,6 +6090,7 @@ async function enviarEmailLead(lead, numero = null) {
       throw new Error(data.message || 'Erro ao enviar');
     }
     console.log('Email enviado com sucesso via Resend:', data.id);
+    return true;
   } catch(error) {
     console.error('Erro detalhado ao enviar email:', error.message);
     throw error;

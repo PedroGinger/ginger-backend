@@ -553,7 +553,9 @@ O QUE NÃO MUDA: matéria-prima também é venda B2B, então a REGRA DE ENTRADA 
 ⚠️ REGRAS COMERCIAIS DA LINHA DE MATÉRIA-PRIMA, DIFERENTES DAS DE FRAGRÂNCIA ⚠️
 Quando a conversa for sobre COMPRAR químico aromático, óleo essencial ou outra matéria-prima, e não sobre desenvolver uma fragrância, valem estas regras e não as da régua de fragrância:
 1. CNPJ continua obrigatório. É venda para empresa, sem exceção, igual ao resto.
-2. NÃO existe volume mínimo. Qualquer quantidade pode ser atendida, e por isso você NUNCA reprova um lead de matéria-prima por causa de volume. Neste caso, preencha criterio_volume com "OK".
+2. NÃO existe volume mínimo. Qualquer quantidade pode ser atendida, e por isso você NUNCA reprova um lead de matéria-prima por causa de volume.
+2.1. ⚠️ A RÉGUA DOS QUATRO CRITÉRIOS NÃO SE APLICA AQUI. Em matéria-prima, ter CNPJ É a qualificação inteira. Quem tem CNPJ e quer comprar químico aromático ou óleo essencial é LEAD BOM, ponto. Não peça briefing de projeto, não avalie segmento e não peça volume mínimo, porque nada disso existe nesta linha.
+2.2. No bloco de dados, quando "linha" for "materia_prima" e a pessoa tiver CNPJ, preencha os QUATRO critérios com "OK": criterio_cnpj, criterio_projeto, criterio_volume e criterio_segmento. Eles foram desenhados para projeto de fragrância e não descrevem esta venda. Sem CNPJ, aí sim criterio_cnpj é "FALHOU" e o caminho é a revenda, igual ao resto.
 3. O que muda conforme o valor é a ENTREGA, e isso precisa ficar claro antes de encerrar:
    Abaixo de R$ 2.000 por pedido, a retirada é presencial na fábrica, em Monte Mor, São Paulo.
    A partir de R$ 2.000 por pedido, a Ginger envia.
@@ -1106,6 +1108,21 @@ function insistiuNoVolume(lead) {
   return /^s/i.test(String(lead.volume_insistido || '').trim());
 }
 function placarCriterios(lead) {
+  // ── MATERIA-PRIMA TEM REGUA PROPRIA, DECISAO DO PEDRO EM 30/09
+  // Os quatro criterios foram desenhados para projeto de fragrancia. Em compra de
+  // quimico aromatico e oleo essencial, "interesse em abrir projeto" e "segmento
+  // atendido" nao descrevem nada: a pessoa quer comprar insumo, nao desenvolver
+  // fragrancia. Deixar esses dois valendo faria todo lead de materia-prima ser
+  // rebaixado para POTENCIAL_FUTURO e mandado para a revenda, e o dono da linha
+  // nunca saberia que existiu. Aqui o CNPJ e a qualificacao inteira.
+  if (ehMateriaPrima(lead)) {
+    const cnpjOk = String(lead.criterio_cnpj || '').trim().toUpperCase() === 'OK';
+    const v = cnpjOk ? 'OK' : 'FALHOU';
+    return {
+      ok: cnpjOk ? 4 : 0, informados: 4,
+      detalhe: { criterio_cnpj: v, criterio_projeto: v, criterio_volume: v, criterio_segmento: v }
+    };
+  }
   const campos = ['criterio_cnpj', 'criterio_projeto', 'criterio_volume', 'criterio_segmento'];
   let ok = 0, informados = 0;
   const detalhe = {};

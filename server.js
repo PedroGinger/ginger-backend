@@ -5966,8 +5966,12 @@ function destinoDoEmail(lead, placar, espera) {
   }
   // Materia-prima vai para o dono da linha, nao para o comercial de fragrancia.
   if (classe === 'BOM' && ehMateriaPrima(lead)) {
-    const destino = EMAIL_MATERIA_PRIMA.split(',').map(e => e.trim()).filter(Boolean);
-    return { para: destino.length ? destino : triagem, rotulo: 'matéria-prima',
+    // Dono da linha mais a triagem em copia, pedido do Pedro em 30/09. O Set
+    // evita mandar duas vezes para a mesma pessoa se um dia os dois enderecos
+    // coincidirem, o que o Resend rejeitaria.
+    const dono = EMAIL_MATERIA_PRIMA.split(',').map(e => e.trim()).filter(Boolean);
+    const destino = [...new Set([...dono, ...triagem])];
+    return { para: destino.length ? destino : triagem, rotulo: 'matéria-prima (com cópia para a triagem)',
       assunto: `[MATÉRIA-PRIMA] Lead ${empresa} — Agente Ginger` };
   }
   if (classe === 'BOM') {

@@ -544,7 +544,23 @@ Atenção interna: "ICP" nesta empresa significa a faixa acima de R$30k. NÃO us
 SEGMENTOS ATENDIDOS
 Cosméticos, Higiene Pessoal (HPPC), Saneantes, Home Care, Pet Care, Perfumaria Fina e Aromatização de Ambiente.
 As fragrâncias da Ginger se aplicam a qualquer produto que carregue fragrância, incluindo velas, difusores, aromatizadores, sprays de ambiente, produtos de limpeza, cosméticos, perfumes, produtos pet e qualquer outro segmento onde fragrância seja um atributo do produto. Nunca dizer que algo "não é nossa expertise", se o produto carrega fragrância, a Ginger pode desenvolver.
-A Ginger também comercializa matérias-primas para fragrâncias. Se o contato perguntar, confirmar que sim e direcionar para o comercial.
+⚠️ A GINGER TAMBÉM VENDE MATÉRIA-PRIMA, E ISSO SE CONFIRMA SEM HESITAR ⚠️
+Além das fragrâncias, a Ginger comercializa matéria-prima para perfumaria, o que inclui QUÍMICOS AROMÁTICOS e ÓLEOS ESSENCIAIS. A origem da empresa, em 2012, foi justamente a distribuição de químicos aromáticos, e essa frente continua ativa.
+Se o contato perguntar se a Ginger vende químico aromático, óleo essencial, isolado, absoluto, resinoide ou matéria-prima em geral, a resposta é SIM, com naturalidade e sem rodeio. Nunca responda que não vendemos, nunca diga que não é o nosso foco e nunca desconverse empurrando a pessoa só para fragrância pronta.
+Modelo: "Vendemos sim. Além das fragrâncias, a gente trabalha com matéria-prima para perfumaria, incluindo químicos aromáticos e óleos essenciais."
+ATENÇÃO AO VOCABULÁRIO: "óleo essencial" é o nome técnico correto de uma matéria-prima e NÃO entra na regra da palavra banida "essência". Escreva óleo essencial sem constrangimento. O que continua banido é usar "essência" como sinônimo do que a Ginger desenvolve e entrega.
+O QUE NÃO MUDA: matéria-prima também é venda B2B, então a REGRA DE ENTRADA do CNPJ vale igual. Sem CNPJ, o caminho continua sendo as revendas parceiras. Você continua sem passar preço, estoque e ficha técnica, que são assunto do comercial.
+⚠️ REGRAS COMERCIAIS DA LINHA DE MATÉRIA-PRIMA, DIFERENTES DAS DE FRAGRÂNCIA ⚠️
+Quando a conversa for sobre COMPRAR químico aromático, óleo essencial ou outra matéria-prima, e não sobre desenvolver uma fragrância, valem estas regras e não as da régua de fragrância:
+1. CNPJ continua obrigatório. É venda para empresa, sem exceção, igual ao resto.
+2. NÃO existe volume mínimo. Qualquer quantidade pode ser atendida, e por isso você NUNCA reprova um lead de matéria-prima por causa de volume. Neste caso, preencha criterio_volume com "OK".
+3. O que muda conforme o valor é a ENTREGA, e isso precisa ficar claro antes de encerrar:
+   Abaixo de R$ 2.000 por pedido, a retirada é presencial na fábrica, em Monte Mor, São Paulo.
+   A partir de R$ 2.000 por pedido, a Ginger envia.
+4. Diga isso com naturalidade, como condição comercial normal, nunca como recusa ou como obstáculo. Pergunte o valor aproximado do pedido para saber qual dos dois casos é o dela, e informe o que se aplica.
+   Modelo: "Uma coisa importante para você já saber: pedidos abaixo de R$ 2 mil são retirados aqui na nossa fábrica, em Monte Mor. A partir de R$ 2 mil a gente envia. Você tem ideia do valor aproximado do seu pedido?"
+5. Não invente preço, prazo de entrega, frete, forma de pagamento nem disponibilidade de nenhum item. Nada disso é com você.
+6. SEMPRE preencha o campo "linha" do bloco de dados com "materia_prima" quando a conversa for de compra de matéria-prima. É esse campo que faz o briefing chegar na pessoa certa dentro da Ginger. Se a conversa for de desenvolvimento de fragrância, preencha "fragrancia". Se for as duas coisas, e o pedido de matéria-prima for o assunto principal, use "materia_prima".
 AS QUATRO PERSONAS E SEUS ARGUMENTOS
 1. CEO/Dono empresa grande: portfólio olfativo como ativo estratégico, credencial Sinter (R$1 bi em 5 anos, cerca de 5% market share sabonetes)
 2. Empresário médio: ROI, margem, dinheiro na mesa
@@ -956,10 +972,12 @@ Somente quando a conversa atingir um ponto de conclusão conforme descrito acima
   "criterio_volume": "",
   "criterio_segmento": "",
   "duvida_tecnica_tema": "",
-  "duvida_resolvida": ""
+  "duvida_resolvida": "",
+  "linha": ""
 }
 %%%END_LEAD_DATA%%%
 Atualize esse bloco a cada resposta com os dados mais recentes. Deixe em branco os que ainda não foram informados. Sempre preencha classificacao e motivo_classificacao assim que tiver informação suficiente.
+O campo "linha" recebe "materia_prima" quando a conversa for de compra de químico aromático, óleo essencial ou outra matéria-prima, e "fragrancia" em todo o resto. Na dúvida, deixe "fragrancia". Esse campo decide para quem o briefing é enviado dentro da Ginger, então errá-lo manda o lead para a pessoa errada.
 Os campos criterio_cnpj, criterio_projeto e criterio_segmento recebem exatamente "OK" ou "FALHOU". O campo criterio_volume recebe "OK", "ABAIXO" ou "NAO_ESTIMOU", nunca "FALHOU":
 - "OK": chegou a uma estimativa e ela atinge o mínimo.
 - "ABAIXO": chegou a uma estimativa e ela é menor que o mínimo.
@@ -1056,7 +1074,15 @@ function volumeEhTetoAbaixoDoMinimo(textoBruto) {
   if (reais !== null && reais <= MIN_REAIS) return `volume declarado como teto de R$ ${reais.toLocaleString('pt-BR')}, e o mínimo é R$ ${MIN_REAIS.toLocaleString('pt-BR')} por mês`;
   return null;
 }
+function ehMateriaPrima(lead) {
+  return String(lead && lead.linha || '').trim().toLowerCase().replace(/[\s-]+/g, '_') === 'materia_prima';
+}
 function estadoDoVolume(lead) {
+  // A linha de materia-prima nao tem volume minimo, decisao do Pedro em 30/09.
+  // Sem esta saida, o rebaixamento automatico derrubaria todo lead de quimico
+  // aromatico que nao atingisse os 3 kg ou os R$5 mil da regua de fragrancia,
+  // que sao numeros de outro produto.
+  if (ehMateriaPrima(lead)) return 'OK';
   const v = String(lead.criterio_volume || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
   const declarado = String(lead.volume_mensal || '').trim();
   const temNumero = declarado && declarado !== '-' && /\d/.test(declarado);
@@ -5841,6 +5867,11 @@ app.get('/webhook-subscribe', async (req, res) => {
 // para todos, porque e justamente o caso em que alguem precisa dar retorno.
 // Sem esta excecao, a separacao esconderia exatamente quem esta esperando.
 const EMAIL_TRIAGEM = process.env.EMAIL_TRIAGEM || 'pedro.bolanho@ginger.ind.br';
+// ── QUEM RECEBE O BRIEFING DE MATERIA-PRIMA
+// Quimico aromatico e oleo essencial tem dono proprio dentro da Ginger, que nao
+// e quem cuida de projeto de fragrancia. Mandar para o comercial de fragrancia
+// faria o pedido atravessar mais uma mesa antes de chegar em quem resolve.
+const EMAIL_MATERIA_PRIMA = process.env.EMAIL_MATERIA_PRIMA || 'dario.borsato@ginger.ind.br';
 // ══════════════════════════════════════════════════════════════
 // ── QUEM MERECE UM E-MAIL
 // ══════════════════════════════════════════════════════════════
@@ -5915,6 +5946,12 @@ function destinoDoEmail(lead, placar, espera) {
   if (lead.promessaDeEspecialistaPendente) {
     return { para: comercial.length ? comercial : triagem, rotulo: 'comercial (promessa em aberto)',
       assunto: `[ESPERANDO CONTATO] Lead ${corpo}` };
+  }
+  // Materia-prima vai para o dono da linha, nao para o comercial de fragrancia.
+  if (classe === 'BOM' && ehMateriaPrima(lead)) {
+    const destino = EMAIL_MATERIA_PRIMA.split(',').map(e => e.trim()).filter(Boolean);
+    return { para: destino.length ? destino : triagem, rotulo: 'matéria-prima',
+      assunto: `[MATÉRIA-PRIMA] Lead ${empresa} — Agente Ginger` };
   }
   if (classe === 'BOM') {
     return { para: comercial.length ? comercial : triagem, rotulo: 'comercial',

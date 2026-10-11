@@ -2013,6 +2013,9 @@ async function dispararGancho(campanha, mediaId, comentarioId, autor, palavra) {
     return { ok: false, motivo: 'ja_chamado_antes', autor: autor.username || autor.id };
   }
   console.log(`Gancho disparado: "${palavra}" por ${autor.username || autor.id} no post ${mediaId}`);
+  // Marca ANTES de enviar: o eco desta mensagem costuma chegar antes de a
+  // semeadura do historico terminar, e sem a marca ele liga o MODO HUMANO.
+  await marcarTextoDoBot(chaveInstagram(autor.id), campanha.direto);
   const envio = await responderComentarioNoDireto(comentarioId, campanha.direto);
   if (!envio.ok) {
     console.error('Falha ao chamar no direto:', JSON.stringify(envio.data).substring(0, 400));
@@ -2088,6 +2091,7 @@ async function enviarInstagram(igsid, texto) {
     console.error('Instagram nao configurado: faltam INSTAGRAM_TOKEN e/ou INSTAGRAM_USER_ID');
     return { ok: false, erro: 'nao configurado' };
   }
+  await marcarTextoDoBot(chaveInstagram(igsid), texto);
   try {
     const r = await chamarInstagram(`/${IG_USER_ID}/messages`, {
       method: 'POST',
@@ -2135,6 +2139,7 @@ async function enviarFacebook(psid, texto) {
     console.error('Facebook nao configurado: falta FACEBOOK_PAGE_TOKEN');
     return { ok: false, erro: 'nao configurado' };
   }
+  await marcarTextoDoBot(chaveFacebook(psid), texto);
   try {
     const r = await chamarFacebook(`/me/messages`, {
       method: 'POST',
@@ -2922,6 +2927,32 @@ async function marcarEnvioProprio(idDaMensagem) {
   if (!idDaMensagem) return;
   await redis('SET', `envio:${idDaMensagem}`, '1', 'EX', 86400);
 }
+// ── ECO RECONHECIDO PELO TEXTO, NAO SO PELO ID
+// O reconhecimento por mid falha em dois casos reais:
+//   1. A resposta privada a um comentario devolve um message_id que NAO e o
+//      mesmo mid que volta no eco. O `envio:<mid>` nunca casa.
+//   2. O eco chega antes de o historico ser semeado, porque entre o envio e a
+//      semeadura ha chamadas a planilha que levam segundos.
+// Em 09/10 os dois aconteceram juntos: o eco do proprio gancho foi lido como
+// mensagem escrita a mao por alguem da Ginger, ligou o MODO HUMANO e o agente
+// se calou na conversa que ele mesmo tinha acabado de abrir. A lead ficou
+// quatro dias esperando.
+// A marca e posta ANTES do envio, por conversa, e vale 15 minutos. Comparar
+// texto e o unico criterio que nao depende de id nem de ordem de chegada.
+function _assinaturaDeTexto(texto) {
+  const t = String(texto || '').replace(/\s+/g, ' ').trim();
+  let h = 5381;
+  for (let i = 0; i < t.length; i++) h = ((h * 33) ^ t.charCodeAt(i)) >>> 0;
+  return `${h.toString(36)}_${t.length}`;
+}
+async function marcarTextoDoBot(chave, texto) {
+  if (!chave || !texto || !String(texto).trim()) return;
+  await redis('SET', `ecotexto:${chave}:${_assinaturaDeTexto(texto)}`, '1', 'EX', 900);
+}
+async function ehEcoDeTextoDoBot(chave, texto) {
+  if (!chave || !texto) return false;
+  return !!(await redis('GET', `ecotexto:${chave}:${_assinaturaDeTexto(texto)}`));
+}
 const NOTA_MENSAGEM_MANUAL =
   '[CONTEXTO INTERNO — não mencionar esta nota ao contato] A mensagem a seguir foi ' +
   'escrita à mão por uma pessoa da Ginger, não por você. Ela faz parte desta conversa e ' +
@@ -2955,7 +2986,11 @@ function ehRespostaAutomaticaDaMeta(texto) {
 // agente continuar a conversa sabendo o que ja foi dito. Nao responde nada.
 async function registrarMensagemManual(chave, texto, mid, canal) {
   if (!texto || !texto.trim()) return;
-  if (mid && await redis('GET', `envio:${mid}`)) return;   // eco do proprio bot
+  if (mid && await redis('GET', `envio:${mid}`)) return;   // eco do proprio bot, pelo id
+  if (await ehEcoDeTextoDoBot(chave, texto)) {             // eco do proprio bot, pelo texto
+    console.log(`Eco da propria mensagem do bot ignorado no ${canal} (${chave}): ${String(texto).substring(0, 60)}`);
+    return;
+  }
   if (ehRespostaAutomaticaDaMeta(texto)) {
     console.log(`Resposta automática da Meta ignorada no ${canal} (${chave}): ${texto.substring(0, 60)}`);
     return;

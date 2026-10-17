@@ -997,6 +997,33 @@ Antes de escrever %%%LEAD_DATA%%%, verifique:
 6. Os campos de dados contêm DADOS, e não frases? "telefone" tem que conter algarismos de um telefone, nunca "pelo whatsapp do contato", "o mesmo do WhatsApp", "esse aqui" ou "a combinar". Vale igual para email, cnpj e empresa. Quando a pessoa disser "pode ser esse mesmo" sobre o WhatsApp da conversa, deixe o campo telefone EM BRANCO: o sistema preenche sozinho com o número real do canal, e ele acerta sempre. Escrever a frase no lugar do número apaga o contato do cartão que chega ao comercial.
 7. Se criterio_volume é "NAO_ESTIMOU", o campo volume_insistido está preenchido com "sim" ou "nao"?
 Se qualquer uma dessas validações falhar, continue a conversa e colete a informação faltante. NUNCA gere o bloco incompleto.`;
+
+// ══════════════════════════════════════════════════════════════
+// ── CACHE DO PROMPT DE SISTEMA
+// ══════════════════════════════════════════════════════════════
+// O SYSTEM_PROMPT tem cerca de 18 mil tokens e ia inteiro em TODA chamada,
+// em toda mensagem de todo lead. Marcado com cache_control, a Anthropic
+// guarda esse prefixo e as chamadas seguintes leem do cache a 10% do preco.
+// O cache dura 5 minutos e cada uso renova o prazo, entao uma conversa ativa
+// paga o prompt uma vez so. Se o custo ainda pesar, trocar o cache_control
+// abaixo por { type: 'ephemeral', ttl: '1h' }: a gravacao passa a custar 2x
+// em vez de 1,25x, mas sobrevive entre conversas espacadas.
+const SYSTEM_BLOCOS = [
+  { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }
+];
+
+// Loga o aproveitamento do cache. Sem isso nao da para saber se pegou.
+// leu > 0 e acerto. gravou > 0 e a primeira chamada daquele ciclo.
+function logCache(rotulo, data) {
+  const u = data && data.usage;
+  if (!u) return;
+  console.log(
+    `cache ${rotulo}: leu=${u.cache_read_input_tokens || 0} ` +
+    `gravou=${u.cache_creation_input_tokens || 0} ` +
+    `novo=${u.input_tokens || 0}`
+  );
+}
+
 // ══════════════════════════════════════════════════════════════
 // ── VALIDAÇÃO E APURAÇÃO
 // ══════════════════════════════════════════════════════════════
@@ -2446,11 +2473,12 @@ app.post('/chat', async (req, res) => {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 1000,
-        system: SYSTEM_PROMPT,
+        system: SYSTEM_BLOCOS,
         messages
       })
     });
     const data = await response.json();
+    logCache('/chat', data);
     if (!data.content) console.log('CLAUDE ERRO /chat:', JSON.stringify(data).substring(0, 800));
     res.json(data);
     // Registro no historico, sem segurar a resposta do visitante.
@@ -2740,11 +2768,12 @@ async function atenderWhatsappEmLote({ numero, msgId, chaveFila, primeira }) {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 1000,
-        system: SYSTEM_PROMPT,
+        system: SYSTEM_BLOCOS,
         messages: historico.filter(m => m.role && m.content)
       })
     });
     const data = await response.json();
+    logCache('whatsapp', data);
     if (!data.content) console.log('CLAUDE ERRO /whatsapp-cloud:', JSON.stringify(data).substring(0, 800));
     const raw = data.content?.[0]?.text || 'Não consegui processar. Pode repetir?';
     console.log('Resposta gerada para:', numero);
@@ -2864,11 +2893,12 @@ async function atenderCanalMetaEmLote(cfg) {
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
       max_tokens: 1000,
-      system: SYSTEM_PROMPT,
+      system: SYSTEM_BLOCOS,
       messages: historico.filter(m => m.role && m.content)
     })
   });
   const data = await response.json();
+  logCache(canal, data);
   if (!data.content) console.log(`CLAUDE ERRO /${canal}:`, JSON.stringify(data).substring(0, 800));
   const raw = data.content?.[0]?.text || 'Não consegui processar. Pode repetir?';
   const regex = /%%%LEAD_DATA%%%([\s\S]*?)%%%END_LEAD_DATA%%%/;
@@ -5062,10 +5092,11 @@ app.get('/reprocessar', async (req, res) => {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6', max_tokens: 1000,
-        system: SYSTEM_PROMPT, messages: mensagens
+        system: SYSTEM_BLOCOS, messages: mensagens
       })
     });
     const data = await r.json();
+    logCache('reprocessar', data);
     const bruto = data.content?.[0]?.text || '';
     const match = bruto.match(/%%%LEAD_DATA%%%([\s\S]*?)%%%END_LEAD_DATA%%%/);
     if (!match) {

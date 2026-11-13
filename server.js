@@ -2446,7 +2446,7 @@ app.get('/', (req, res) => {
     canal: 'WhatsApp Cloud API (Meta)',
     redis: REDIS_URL ? 'configurado' : 'não configurado',
     phoneNumberId: WA_PHONE_ID ? 'configurado' : 'NÃO CONFIGURADO',
-    versao: 'sessao 27, aviso de retorno so quando o lead volta a escrever'
+    versao: 'sessao 28, lead do chat do site passa a ganhar linha na planilha'
   });
 });
 // ── ROTA: CHAT DO SITE
@@ -4553,6 +4553,83 @@ app.get('/recuperar-orfaos', async (req, res) => {
 // trava em garantirLinhaDoContato impede novos casos; esta rota trata os que
 // ja estao na planilha. Ela NAO apaga nada: marca as repetidas na coluna I,
 // para que parem de inflar a contagem de leads captados sem perder o registro.
+// ══════════════════════════════════════════════════════════════
+// ── ROTA: RECUPERAR UMA SESSAO DO CHAT DO SITE
+// ══════════════════════════════════════════════════════════════
+// A /recuperar-orfaos ignora sessoes do site de proposito: visitante anonimo
+// viraria lixo na planilha. Mas quando a sessao virou lead de verdade, com
+// nome, empresa e telefone, a linha precisa existir. Esta rota trata UMA
+// sessao por vez, com os dados informados a mao, entao nao inventa nada.
+// Prévia por padrao. So grava com &aplicar=1.
+app.get('/recuperar-site', async (req, res) => {
+  if (!exigeChave(req, res)) return;
+  const aplicar = req.query.aplicar === '1';
+  let sessao = (req.query.sessao || '').trim();
+  if (!sessao) return res.status(400).json({ erro: 'informe &sessao=site-xxxxxxxx' });
+  if (!sessao.startsWith('site-')) sessao = `site-${sessao}`;
+  const dados = {
+    nome: (req.query.nome || '').trim(),
+    empresa: (req.query.empresa || '').trim(),
+    telefone: (req.query.telefone || '').trim(),
+    email: (req.query.email || '').trim(),
+    cnpj: (req.query.cnpj || '').trim(),
+    classificacao: (req.query.classificacao || '').trim().toUpperCase(),
+    motivo: (req.query.motivo || '').trim()
+  };
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return res.status(500).json({ erro: 'sheets indisponivel' });
+    // A conversa precisa existir, senao nao ha o que recuperar.
+    const rc = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_CONVERSAS}!A:E`
+    });
+    const msgs = (rc.data.values || []).slice(1).filter(l => chaveConversa(l[1] || '') === sessao);
+    if (!msgs.length) return res.status(404).json({ erro: 'sessao sem conversa registrada', sessao });
+    // Ja existe linha para esta sessao ou para este telefone?
+    const rl = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A:O`
+    });
+    const kTelAlvo = chaveNumero(dados.telefone || '');
+    let jaExiste = null;
+    const linhas = rl.data.values || [];
+    for (let i = 1; i < linhas.length; i++) {
+      const row = linhas[i] || [];
+      if ((row[COL_ID_CANAL] || '').trim() === sessao) { jaExiste = i + 1; break; }
+      if (kTelAlvo && chaveNumero(row[3] || '') === kTelAlvo) { jaExiste = i + 1; break; }
+    }
+    const primeira = msgs.map(l => l[0]).sort((a, b) => parseDataBrasil(a) - parseDataBrasil(b))[0];
+    const previa = {
+      sessao, mensagens: msgs.length,
+      recebidas: msgs.filter(l => (l[2] || '').toLowerCase() === 'recebida').length,
+      data: primeira || agoraBrasil(),
+      ...dados, origem: 'bot-site',
+      status: dados.classificacao ? 'qualificado pelo agente' : 'recuperado do histórico'
+    };
+    if (jaExiste) {
+      return res.json({ modo: 'NADA A FAZER', linhaExistente: jaExiste,
+        observacao: 'Já existe linha para esta sessão ou para este telefone.', previa });
+    }
+    if (!aplicar) {
+      return res.json({ modo: 'PRÉVIA, nada foi alterado', vaiCriar: 1, previa,
+        comoAplicar: 'acrescente &aplicar=1 no endereço',
+        oQueAcontece: 'Cria UMA linha com a coluna O preenchida com a sessão. É a coluna O que faz o painel achar a conversa.' });
+    }
+    const rowIndex = await criarLinhaLead({
+      data: previa.data, nome: dados.nome, email: dados.email, telefone: dados.telefone,
+      empresa: dados.empresa, cnpj: dados.cnpj, origem: 'bot-site',
+      status: previa.status, idCanal: sessao
+    });
+    if (!rowIndex) return res.status(500).json({ erro: 'nao foi possivel criar a linha' });
+    await setLinhaCache(sessao, rowIndex);
+    if (dados.classificacao) await atualizarQualificacao(rowIndex, dados.classificacao, dados.motivo);
+    console.log(`Sessao do site recuperada: ${sessao} na linha ${rowIndex}`);
+    res.json({ modo: 'APLICADO', linha: rowIndex, ...previa,
+      proximoPasso: 'Abra o painel. O lead aparece com a conversa ligada.' });
+  } catch(e) {
+    console.error('Erro ao recuperar sessao do site:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
 app.get('/marcar-duplicados-canal', async (req, res) => {
   if (!exigeChave(req, res)) return;
   const aplicar = req.query.aplicar === '1';
@@ -5695,6 +5772,109 @@ app.get('/corrigir-cabecalhos', async (req, res) => {
   }
 });
 // ── ROTA: ENVIO MANUAL DE LEAD
+// Descobre a sessao do chat do site em que este telefone foi digitado.
+// Janela curta e correspondencia unica: na duvida devolve '' e o chamador cai
+// na chave do telefone. Ligar a conversa errada seria pior que nao ligar.
+const JANELA_SESSAO_MS = 6 * 60 * 60 * 1000;
+async function sessaoDoSitePeloTelefone(telefone) {
+  const alvo = String(telefone || '').replace(/\D/g, '');
+  if (alvo.length < 10) return '';
+  const curto = alvo.slice(-8);
+  try {
+    const sheets = await getSheetsClient();
+    if (!sheets) return '';
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_CONVERSAS}!A:E`
+    });
+    const agora = Date.now();
+    const achadas = new Set();
+    for (const l of (r.data.values || []).slice(1)) {
+      const chave = chaveConversa(l[1] || '');
+      if (!chave.startsWith('site-')) continue;
+      if ((l[2] || '').toLowerCase() !== 'recebida') continue;
+      const ts = parseDataBrasil(l[0]);
+      if (!ts || (agora - ts) > JANELA_SESSAO_MS) continue;
+      if (String(l[3] || '').replace(/\D/g, '').includes(curto)) achadas.add(chave);
+    }
+    if (achadas.size === 1) {
+      const unica = [...achadas][0];
+      console.log(`Sessão do site deduzida pelo telefone ${alvo}: ${unica}`);
+      return unica;
+    }
+    if (achadas.size > 1) console.log(`Telefone ${alvo} aparece em ${achadas.size} sessões do site, nenhuma assumida`);
+    return '';
+  } catch(e) {
+    console.error('Erro ao deduzir sessão do site:', e.message);
+    return '';
+  }
+}
+// ══════════════════════════════════════════════════════════════
+// ── LINHA NA PLANILHA PARA O LEAD DO CHAT DO SITE
+// ══════════════════════════════════════════════════════════════
+// Ate aqui, o widget do site mandava o lead para POST /lead, que so disparava
+// o e-mail. Nenhuma linha era criada na planilha. Resultado: todo lead vindo
+// do chat do site existia no e-mail e na aba de conversas, e nao existia no
+// painel. A conversa fica gravada sob a chave "site-<sessao>", entao sem essa
+// chave na coluna O o painel nunca consegue ligar as mensagens ao lead.
+// Caso que revelou: Natalia, Florenar, 13/11/2026, sessao site-mwf5u22pdc35b5.
+// Esta funcao fecha o buraco. Devolve '' quando deu certo, ou o texto do aviso
+// quando nao deu, para o e-mail avisar em vez de falhar em silencio.
+async function garantirLinhaDoLeadDoSite(lead) {
+  try {
+    // A chave da conversa e a sessao do widget. Sem ela, cai no telefone.
+    const sessao = (lead.sessionId || lead.idCanal || '').trim();
+    let idCanal = sessao
+      ? (sessao.startsWith('site-') ? sessao : `site-${sessao}`)
+      : '';
+    // O widget do site pode nao mandar a sessao. Sem ela, a linha nasceria com
+    // a chave do telefone e o painel nunca acharia a conversa, que esta gravada
+    // sob "site-<sessao>". Entao, quando a sessao nao vem, ela e deduzida: a
+    // sessao recente do site em que o proprio telefone do lead foi digitado.
+    // So aceita quando a correspondencia e UNICA, para nao ligar o lead errado.
+    if (!idCanal) idCanal = await sessaoDoSitePeloTelefone(lead.telefone || '');
+    if (!idCanal) idCanal = chaveNumero(lead.telefone || '');
+    if (!idCanal) return 'Lead sem sessão e sem telefone: não foi possível criar a linha na planilha.';
+    const rowIndex = await garantirLinhaDoContato({
+      idCanal,
+      telefone: lead.telefone || '',
+      nome: lead.nome || '',
+      origem: 'bot-site'
+    });
+    if (!rowIndex) {
+      console.error(`FALHA AO CRIAR LINHA do lead do site ${idCanal} (${lead.nome || 'sem nome'}, ${lead.empresa || 'sem empresa'})`);
+      return 'Não foi possível criar a linha deste lead na planilha. Ele está neste e-mail e na aba de conversas, mas não aparece no painel. Avise o marketing.';
+    }
+    // Preenche nome, e-mail, empresa e CNPJ sem sobrescrever o que ja existe.
+    await completarDadosLead(rowIndex, lead);
+    // Telefone: a coluna D e o que o painel usa para casar com o WhatsApp.
+    if ((lead.telefone || '').trim()) {
+      try {
+        const sheets = await getSheetsClient();
+        if (sheets) {
+          const r = await sheets.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!D${rowIndex}`
+          });
+          const atual = ((r.data.values && r.data.values[0] && r.data.values[0][0]) || '').trim();
+          if (!atual) {
+            await sheets.spreadsheets.values.update({
+              spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!D${rowIndex}`,
+              valueInputOption: 'RAW', requestBody: { values: [[lead.telefone]] }
+            });
+          }
+        }
+      } catch(e) { console.error('Erro ao gravar telefone do lead do site:', e.message); }
+    }
+    if (lead.classificacao) {
+      await atualizarQualificacao(rowIndex, lead.classificacao, lead.motivo || '');
+      await atualizarStatus(rowIndex, 'qualificado pelo agente');
+    }
+    console.log(`Lead do site registrado na linha ${rowIndex} (${idCanal})`);
+    return '';
+  } catch(e) {
+    console.error('Erro ao garantir linha do lead do site:', e.message);
+    return 'Erro ao gravar este lead na planilha. Ele está neste e-mail, mas não aparece no painel. Avise o marketing.';
+  }
+}
 app.post('/lead', async (req, res) => {
   const lead = req.body;
   // NAO_LEAD nunca aciona o comercial, nem por esta rota.
@@ -5707,6 +5887,9 @@ app.post('/lead', async (req, res) => {
   }
   try {
     corrigirClassificacaoSeInconsistente(lead);
+    // A linha vem antes do e-mail de proposito: se a planilha falhar, o e-mail
+    // sai mesmo assim, mas sai avisando. Lead perdido e pior que linha faltando.
+    lead.avisoPlanilha = await garantirLinhaDoLeadDoSite(lead);
     const enviado = (await enviarEmailLead(lead)) === true;
     res.json({ success: true, emailEnviado: enviado, classificacao: lead.classificacao,
       motivo: enviado ? undefined : 'classificação não aciona ninguém pela regra de 28/09' });
@@ -6207,6 +6390,7 @@ async function enviarEmailLead(lead, numero = null) {
       ${blocoReceita}
     </table>
     ${receita && receita.ok ? `<p style="color:#555;font-size:12px">O CNAE acima é informação de apoio para a especialista. O agente não usa ramo de atividade para classificar o lead e não comenta isso com o contato.</p>` : ''}
+    ${lead.avisoPlanilha ? `<p style="background:#FDE8E4;border-left:4px solid #F15A29;padding:10px 14px;color:#7A2E12;font-size:13px"><b>Atenção:</b> ${lead.avisoPlanilha}</p>` : ''}
     <p style="color:#47166B;font-size:13px"><b>Ao abrir o projeto no Otimizah, anote o número do projeto na coluna PROJETO da planilha LEADS GINGER.</b> É o que permite medir o retorno dos leads da internet.</p>
     <p style="color:#888;font-size:12px">Gerado automaticamente pelo Agente Ginger</p>
   `;

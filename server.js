@@ -2619,6 +2619,45 @@ function crmNotas(lead, placar) {
   return l.join('\n');
 }
 
+// ── O CNPJ SO VAI QUANDO FOR SEGURO
+// O POST /clients e upsert e procura por telefone, depois CPF/CNPJ, depois
+// e-mail. Mandar o CNPJ de uma empresa que ja tem contato no CRM faria a
+// pessoa nova SOBRESCREVER a que ja estava la: a Priscila do P&D viraria a
+// Amanda de Compras na mesma ficha.
+// Entao a regra e: o primeiro contato de cada empresa leva o CNPJ, e os
+// seguintes vao sem ele, ligados pelo nome da empresa. Assim toda empresa tem
+// pelo menos um contato com CNPJ (que e o que o Mega exige para abrir cliente)
+// e nenhuma ficha e destruida.
+// Quando o Mindstract liberar CNPJ repetido entre contatos, esta funcao pode
+// passar a devolver sempre true.
+async function cnpjPodeSerEnviado(cnpj) {
+  const d = String(cnpj || '').replace(/\D/g, '');
+  if (d.length !== 14 && d.length !== 11) return false;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const r = await fetch(`${MINDSTRACT_API_URL}/clients?cpf_cnpj=${d}&limit=1`, {
+      headers: { 'X-API-Key': MINDSTRACT_API_KEY },
+      signal: controller.signal
+    });
+    if (!r.ok) {
+      console.log(`CRM: consulta de CNPJ falhou (${r.status}), enviando sem o documento por seguranca.`);
+      return false;
+    }
+    const dados = await r.json();
+    const existe = (dados && (dados.total > 0 || (dados.items && dados.items.length > 0)));
+    if (existe) console.log(`CRM: CNPJ ${d} ja pertence a outro contato, enviando sem o documento.`);
+    return !existe;
+  } catch (e) {
+    // Na duvida, nao manda. Contato sem CNPJ e um dado faltando; contato com
+    // CNPJ errado sobrescreve o de outra pessoa.
+    console.log(`CRM: consulta de CNPJ falhou (${e.message}), enviando sem o documento por seguranca.`);
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function enviarLeadParaCRM(lead, ctx, placar) {
   if (!MINDSTRACT_ATIVO) return null;
   if (!MINDSTRACT_API_KEY) {
@@ -2642,8 +2681,11 @@ async function enviarLeadParaCRM(lead, ctx, placar) {
     email: email || undefined,
     tags: crmTags(lead, ctx, placar),
     notes: crmNotas(lead, placar) || undefined
-    // cpf_cnpj fica de proposito de fora. Ver o comentario no topo da secao.
   };
+  // So o primeiro contato de cada empresa leva o CNPJ. Ver cnpjPodeSerEnviado.
+  if (lead.cnpj && await cnpjPodeSerEnviado(lead.cnpj)) {
+    corpo.cpf_cnpj = String(lead.cnpj).replace(/\D/g, '');
+  }
   Object.keys(corpo).forEach(k => corpo[k] === undefined && delete corpo[k]);
 
   const controller = new AbortController();

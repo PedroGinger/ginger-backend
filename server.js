@@ -2586,17 +2586,30 @@ function crmTelefoneE164(valor) {
   return '';
 }
 
-function crmTagDoCanal(origem) {
-  const o = String(origem || '').toLowerCase();
+// ⚠️ O CANAL VEM DE ctx.canal, NAO DE ctx.origem ⚠️
+// O webhook do WhatsApp chama tratarBlocoLead com origem "bot-site" e
+// canal "whatsapp". O "bot-site" ali quer dizer "veio do bot", nao "veio do
+// site", e e o mesmo valor usado pelo formulario do site de verdade.
+// Lendo a origem, todo lead de WhatsApp, que e o canal principal, era
+// etiquetado como "site". Por isso o canal manda, e a origem so entra quando
+// ele nao vier.
+function crmTagDoCanal(ctx) {
+  const canal = String(ctx && ctx.canal || '').toLowerCase();
+  if (canal === 'whatsapp') return 'whatsapp';
+  if (canal === 'instagram') return 'instagram';
+  if (canal === 'facebook') return 'facebook';
+  if (canal) return canal;
+  const o = String(ctx && ctx.origem || '').toLowerCase();
   if (o.includes('instagram') || o.startsWith('ig')) return 'instagram';
   if (o.includes('facebook') || o.startsWith('fb')) return 'facebook';
+  if (o.includes('comentario')) return 'comentário';
+  if (o.includes('planilha')) return 'whatsapp';
   if (o.includes('site')) return 'site';
-  if (o.includes('whats') || o.includes('planilha')) return 'whatsapp';
   return 'agente';
 }
 
 function crmTags(lead, ctx, placar) {
-  const t = ['lead do agente', crmTagDoCanal(ctx && ctx.origem)];
+  const t = ['lead do agente', crmTagDoCanal(ctx)];
   const classe = String(lead.classificacao || '').trim().toUpperCase();
   if (classe === 'BOM') t.push('lead qualificado');
   if (classe === 'POTENCIAL_FUTURO') t.push('potencial futuro');

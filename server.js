@@ -2624,6 +2624,30 @@ function crmNotas(lead, placar) {
   return l.join('\n');
 }
 
+// ── RODIZIO DE RESPONSAVEL
+// Sem responsavel, o lead existe no CRM mas nao esta na carteira de ninguem, e
+// ninguem e cobrado quando ele fica parado. As duas enxergam todos os contatos
+// de qualquer jeito: o campo decide quem RESPONDE, nao quem ve.
+// O contador mora no Redis para sobreviver ao restart do Render, que acontece a
+// cada deploy e sempre que o servico hiberna. Com o contador em memoria, toda
+// hibernacao zeraria a vez e uma delas receberia quase tudo.
+const CRM_RODIZIO = [
+  { nome: 'Juliana Cardoso', id: '62b681f6-cb9c-4bfe-865b-db1b37177324' },
+  { nome: 'Jennifer Santos', id: 'e48e53a3-a2ea-49a8-8e45-f78f8ba84a49' }
+];
+async function proximoResponsavelCRM() {
+  if (!CRM_RODIZIO.length) return null;
+  const n = await redis('INCR', 'crm:rodizio');
+  if (n === null) {
+    // Redis fora. Melhor mandar sem responsavel do que mandar todos para a
+    // mesma pessoa sem ninguem perceber.
+    console.log('CRM: rodizio sem Redis, enviando sem responsavel.');
+    return null;
+  }
+  const escolhido = CRM_RODIZIO[(Number(n) - 1) % CRM_RODIZIO.length];
+  return escolhido;
+}
+
 // ── O CNPJ SO VAI QUANDO FOR SEGURO
 // O POST /clients e upsert e procura por telefone, depois CPF/CNPJ, depois
 // e-mail. Mandar o CNPJ de uma empresa que ja tem contato no CRM faria a
@@ -2691,6 +2715,11 @@ async function enviarLeadParaCRM(lead, ctx, placar) {
   if (lead.cnpj && await cnpjPodeSerEnviado(lead.cnpj)) {
     corpo.cpf_cnpj = String(lead.cnpj).replace(/\D/g, '');
   }
+  // Um lead para cada, na ordem de chegada. O campo so e aceito na criacao: se
+  // o contato ja existir, o CRM mantem o responsavel que ele ja tinha, o que e
+  // o certo, porque quem ja cuidava dele continua cuidando.
+  const dono = await proximoResponsavelCRM();
+  if (dono) { corpo.assigned_to = dono.id; lead.crmResponsavel = dono.nome; }
   Object.keys(corpo).forEach(k => corpo[k] === undefined && delete corpo[k]);
 
   const controller = new AbortController();
@@ -2725,7 +2754,8 @@ async function enviarLeadParaCRM(lead, ctx, placar) {
     let dados = {};
     try { dados = JSON.parse(texto); } catch (e) {}
     console.log(`CRM OK: ${corpo.name} ${dados.created === false ? 'atualizado' : 'criado'}` +
-      `${dados.matched_by ? ` (casou por ${dados.matched_by})` : ''} | tags: ${corpo.tags.join(', ')}`);
+      `${dados.matched_by ? ` (casou por ${dados.matched_by})` : ''}` +
+      `${lead.crmResponsavel ? ` | resp: ${lead.crmResponsavel}` : ''} | tags: ${corpo.tags.join(', ')}`);
     return dados;
   } catch (e) {
     const motivo = e.name === 'AbortError' ? 'timeout de 10s' : e.message;

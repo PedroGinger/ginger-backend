@@ -2644,9 +2644,12 @@ function crmNotas(lead, placar) {
 // O contador mora no Redis para sobreviver ao restart do Render, que acontece a
 // cada deploy e sempre que o servico hiberna. Com o contador em memoria, toda
 // hibernacao zeraria a vez e uma delas receberia quase tudo.
+// Decisao do Pedro em 19/11: tudo para a Juliana. O rodizio continua aqui
+// porque voltar a dividir e so acrescentar a Jennifer de volta nesta lista,
+// sem mexer em mais nada:
+//   { nome: 'Jennifer Santos', id: 'e48e53a3-a2ea-49a8-8e45-f78f8ba84a49' }
 const CRM_RODIZIO = [
-  { nome: 'Juliana Cardoso', id: '62b681f6-cb9c-4bfe-865b-db1b37177324' },
-  { nome: 'Jennifer Santos', id: 'e48e53a3-a2ea-49a8-8e45-f78f8ba84a49' }
+  { nome: 'Juliana Cardoso', id: '62b681f6-cb9c-4bfe-865b-db1b37177324' }
 ];
 async function proximoResponsavelCRM() {
   if (!CRM_RODIZIO.length) return null;
